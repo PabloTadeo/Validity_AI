@@ -1,0 +1,2185 @@
+---
+title: "MyJump_SHAP"
+author: "Pablo Tadeo. PhD."
+date: "2025-03-11"
+output: html_document
+---
+
+```{r}
+# Install necessary packages if not already installed
+required_packages <- c("tidyverse", "data.table", "ggplot2", "patchwork",
+                       "dplyr", "readr", "skimr", "GGally", "caret", "randomForest",
+                       "DALEX", "shapviz", "lme4", "performance", "e1071")
+
+new_packages <- required_packages[!(required_packages %in% installed.packages()[, "Package"])]
+if(length(new_packages)) install.packages(new_packages)
+
+# Load libraries
+library(tidyverse)
+library(data.table)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+library(readr)
+library(skimr)
+library(GGally)
+library(caret)
+library(randomForest)
+library(DALEX)
+library(shapviz)
+library(lme4)
+library(performance)
+library(e1071)
+
+# Set a clean theme for plots
+theme_set(theme_minimal())
+```
+
+```{r}
+# Define the file path (Adjust if necessary)
+file_path <- "~/Desktop/Dataset_MyJump.SHAP.csv"
+
+# Load dataset
+df <- fread(file_path)
+
+# Preview dataset structure
+glimpse(df)
+```
+
+# Cleaning and initial transformation
+
+```{r}
+# Convert character variables (force and power) to numeric
+df <- df %>%
+  mutate(force_N = as.numeric(gsub(",", "", force_N)),
+         power_W = as.numeric(gsub(",", "", power_W)))
+
+# Convert categorical variables to factors
+df <- df %>%
+  mutate(team = as.factor(team),
+         sex = as.factor(sex),
+         jump_type = as.factor(jump_type))
+
+# Check for missing values
+missing_values <- colSums(is.na(df))
+
+# Remove duplicates if necessary
+df <- df %>% distinct()
+
+# Display summary statistics to verify changes
+summary(df)
+
+# Confirm data types
+glimpse(df)
+```
+
+# Detecting outliers in key numerical variables
+
+```{r}
+# Function to detect outliers using IQR
+detect_outliers <- function(df, column) {
+  Q1 <- quantile(df[[column]], 0.25, na.rm = TRUE)
+  Q3 <- quantile(df[[column]], 0.75, na.rm = TRUE)
+  IQR_value <- Q3 - Q1
+  lower_bound <- Q1 - 1.5 * IQR_value
+  upper_bound <- Q3 + 1.5 * IQR_value
+  
+  outliers <- df %>% filter(df[[column]] < lower_bound | df[[column]] > upper_bound)
+  return(outliers)
+}
+
+# Apply outlier detection for each variable
+outliers_list <- list()
+numeric_vars <- c("body_weight_kg", "jump_height_cm", "flight_time_ms", "force_N", 
+                  "velocity_m_s", "power_W", "impulse_N_kg")
+
+for (var in numeric_vars) {
+  outliers_list[[var]] <- detect_outliers(df, var)
+}
+
+# Display number of outliers per variable
+outlier_counts <- sapply(outliers_list, nrow)
+outlier_counts
+```
+
+## Filtering extreme outliers
+
+```{r}
+# Function to remove outliers using IQR
+remove_outliers <- function(df, column) {
+  Q1 <- quantile(df[[column]], 0.25, na.rm = TRUE)
+  Q3 <- quantile(df[[column]], 0.75, na.rm = TRUE)
+  IQR_value <- Q3 - Q1
+  lower_bound <- Q1 - 1.5 * IQR_value
+  upper_bound <- Q3 + 1.5 * IQR_value
+  
+  df <- df %>% filter(df[[column]] >= lower_bound & df[[column]] <= upper_bound)
+  return(df)
+}
+
+# Apply outlier removal for each numeric variable
+clean_df <- df
+for (var in numeric_vars) {
+  clean_df <- remove_outliers(clean_df, var)
+}
+
+# Check new dataset size
+nrow(clean_df)
+```
+
+# Descriptive Tables
+
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(gt)
+
+# Table 1: Distribution by Sport and Sex (Ya estaba correcta, se mantiene)
+table1 <- df %>%
+  group_by(team, sex) %>%
+  summarise(Count = n_distinct(name), .groups = "drop") %>%
+  pivot_wider(names_from = sex, values_from = Count, values_fill = 0) %>%
+  mutate(Total = rowSums(select(., -team), na.rm = TRUE)) %>%
+  bind_rows(summarise(., team = "Overall", across(where(is.numeric), sum, na.rm = TRUE))) %>%
+  gt() %>%
+  tab_header(
+    title = "Table 1. Team and Sex Distribution in My Jump 3 Dataset",
+    subtitle = "Distribution of CMJ trials by sport and sex"
+  ) %>%
+  cols_label(team = "Team", Male = "Male (n)", Female = "Female (n)", Total = "Total (n)")
+
+# Function to calculate Mean ± SD
+summarize_with_sd <- function(data, var) {
+  mean_val <- mean(data[[var]], na.rm = TRUE)
+  sd_val <- sd(data[[var]], na.rm = TRUE)
+  return(paste0(round(mean_val, 2), " ± ", round(sd_val, 2)))
+}
+
+# Table 2: Biomechanical Variables
+table2 <- df %>%
+  group_by(team) %>%
+  summarise(
+    `Jump Height (cm)` = summarize_with_sd(cur_data(), "jump_height_cm"),
+    `Flight Time (ms)` = summarize_with_sd(cur_data(), "flight_time_ms"),
+    `Force (N)` = summarize_with_sd(cur_data(), "force_N"),
+    `Velocity (m/s)` = summarize_with_sd(cur_data(), "velocity_m_s"),
+    `Power (W)` = summarize_with_sd(cur_data(), "power_W"),
+    `Impulse (N/kg)` = summarize_with_sd(cur_data(), "impulse_N_kg"),
+    .groups = "drop"
+  ) %>%
+  bind_rows(
+    df %>%
+      summarise(
+        team = "Overall",
+        `Jump Height (cm)` = summarize_with_sd(cur_data(), "jump_height_cm"),
+        `Flight Time (ms)` = summarize_with_sd(cur_data(), "flight_time_ms"),
+        `Force (N)` = summarize_with_sd(cur_data(), "force_N"),
+        `Velocity (m/s)` = summarize_with_sd(cur_data(), "velocity_m_s"),
+        `Power (W)` = summarize_with_sd(cur_data(), "power_W"),
+        `Impulse (N/kg)` = summarize_with_sd(cur_data(), "impulse_N_kg")
+      )
+  ) %>%
+  gt() %>%
+  tab_header(
+    title = "Table 2. Biomechanical Variables",
+    subtitle = "Descriptive Statistics for CMJ Trials (Mean ± SD)"
+  ) %>%
+  cols_label(team = "Team")
+
+# Table 3: Categorical Variables by Jump Type
+table3 <- df %>%
+  group_by(jump_type) %>%
+  summarise(
+    `Jump Height (cm)` = summarize_with_sd(cur_data(), "jump_height_cm"),
+    `Flight Time (ms)` = summarize_with_sd(cur_data(), "flight_time_ms"),
+    `Force (N)` = summarize_with_sd(cur_data(), "force_N"),
+    `Velocity (m/s)` = summarize_with_sd(cur_data(), "velocity_m_s"),
+    `Power (W)` = summarize_with_sd(cur_data(), "power_W"),
+    `Impulse (N/kg)` = summarize_with_sd(cur_data(), "impulse_N_kg"),
+    .groups = "drop"
+  ) %>%
+  bind_rows(
+    df %>%
+      summarise(
+        jump_type = "Overall",
+        `Jump Height (cm)` = summarize_with_sd(cur_data(), "jump_height_cm"),
+        `Flight Time (ms)` = summarize_with_sd(cur_data(), "flight_time_ms"),
+        `Force (N)` = summarize_with_sd(cur_data(), "force_N"),
+        `Velocity (m/s)` = summarize_with_sd(cur_data(), "velocity_m_s"),
+        `Power (W)` = summarize_with_sd(cur_data(), "power_W"),
+        `Impulse (N/kg)` = summarize_with_sd(cur_data(), "impulse_N_kg")
+      )
+  ) %>%
+  gt() %>%
+  tab_header(
+    title = "Table 3. Categorical Variables",
+    subtitle = "Descriptive Statistics by Jump Type (Mean ± SD)"
+  ) %>%
+  cols_label(jump_type = "Jump Type")
+
+# Print Tables
+print(table1)
+print(table2)
+print(table3)
+```
+
+# Outlier detection
+
+```{r}
+# Load necessary libraries
+library(ggplot2)
+library(dplyr)
+
+# Define numerical variables to check for outliers
+num_vars <- c("jump_height_cm", "flight_time_ms", "force_N", "velocity_m_s", "power_W", "impulse_N_kg")
+
+# Boxplots to detect outliers
+df %>%
+  select(all_of(num_vars)) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "Value") %>%
+  ggplot(aes(x = Variable, y = Value)) +
+  geom_boxplot(outlier.color = "red", outlier.shape = 16, outlier.size = 2) +
+  coord_flip() +
+  labs(title = "Boxplot of Biomechanical Variables", x = "Variable", y = "Value") +
+  theme_minimal()
+```
+
+## Winsorization
+
+```{r}
+# Install DescTools if not already installed
+if (!requireNamespace("DescTools", quietly = TRUE)) {
+  install.packages("DescTools")
+}
+
+# Load necessary libraries
+library(DescTools)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+```
+
+```{r}
+# Custom Winsorization function
+winsorize_manual <- function(x, lower = 0.05, upper = 0.95) {
+  qnt <- quantile(x, probs = c(lower, upper), na.rm = TRUE)
+  x <- ifelse(x < qnt[1], qnt[1], ifelse(x > qnt[2], qnt[2], x))
+  return(x)
+}
+
+# Apply Winsorization manually
+df_winsorized <- df %>%
+  mutate(across(all_of(biomechanical_vars), winsorize_manual, .names = "winsor_{.col}"))
+
+# Summary of Winsorized variables
+summary(df_winsorized %>% select(starts_with("winsor_")))
+```
+
+```{r}
+# Load necessary libraries
+library(ggplot2)
+library(reshape2)
+
+# Select only winsorized variables
+df_winsor_long <- df_winsorized %>%
+  select(starts_with("winsor_")) %>%
+  melt()
+
+# Boxplot of Winsorized Variables
+ggplot(df_winsor_long, aes(y = value, x = variable)) +
+  geom_boxplot(fill = "gray", color = "black", outlier.color = "red") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Boxplot of Winsorized Biomechanical Variables",
+       x = "Variable",
+       y = "Value")
+```
+
+```{r}
+# Define the selected features
+features <- c("winsor_jump_height_cm", "winsor_flight_time_ms", 
+              "winsor_force_N", "winsor_velocity_m_s", 
+              "winsor_power_W", "winsor_impulse_N_kg")
+
+# Select only the required columns
+df_ml <- df_winsorized[, ..features]
+```
+
+# Normalization and Splitting of Datasets for Machine Learning
+
+```{r}
+colnames(df_ml)
+```
+
+```{r}
+colnames(df_winsorized)
+```
+
+```{r}
+# Ensure df_winsorized is a data.table
+library(data.table)
+setDT(df_winsorized)  
+
+# Define all necessary variables (biomechanical + anthropometric)
+all_features <- c("winsor_jump_height_cm", "winsor_flight_time_ms", "winsor_force_N",
+                  "winsor_velocity_m_s", "winsor_power_W", "winsor_impulse_N_kg",
+                  "body_weight_kg", "Height_cm", "Leg_Length_cm", "Height_90_cm", "Lever_cm")
+
+# Select only the necessary columns
+df_ml <- df_winsorized[, ..all_features]
+
+# Confirm column names
+colnames(df_ml)
+```
+
+```{r}
+# Load required libraries
+library(dplyr)
+
+# Select only numerical features for normalization
+numeric_features <- c("winsor_jump_height_cm", "winsor_flight_time_ms", "winsor_force_N", 
+                      "winsor_velocity_m_s", "winsor_power_W", "winsor_impulse_N_kg",
+                      "body_weight_kg", "Height_cm", "Leg_Length_cm", "Height_90_cm", "Lever_cm")
+
+# Normalize using Z-score standardization (ensure output is numeric)
+df_scaled_ml <- df_ml %>%
+  mutate(across(all_of(numeric_features), ~ as.numeric(scale(.)), .names = "scaled_{.col}"))
+
+# Verify the structure after normalization
+glimpse(df_scaled_ml)
+```
+
+# Training the Random Forest model and analyzing SHAP
+
+```{r}
+install.packages("SHAPforxgboost")
+```
+
+```{r}
+library(SHAPforxgboost)
+```
+
+```{r}
+ls()
+```
+
+```{r}
+colnames(df_ml)
+```
+
+```{r}
+colnames(df_scaled_ml)
+```
+
+```{r}
+# Define features and target variable
+features <- c("scaled_body_weight_kg", "scaled_Height_cm", "scaled_Leg_Length_cm", 
+              "scaled_Height_90_cm", "scaled_Lever_cm", "scaled_winsor_force_N",
+              "scaled_winsor_velocity_m_s", "scaled_winsor_power_W", "scaled_winsor_impulse_N_kg")
+
+target <- "scaled_winsor_jump_height_cm"
+
+# Verify if all columns exist in df_scaled_ml
+all_vars_exist <- all(c(features, target) %in% colnames(df_scaled_ml))
+print(all_vars_exist)
+```
+
+```{r}
+# Select only the necessary columns for the model
+df_model <- df_scaled_ml[, c(features, target), drop = FALSE]
+
+# Check the structure of the new dataframe
+str(df_model)
+```
+
+```{r}
+str(df_model)
+```
+
+```{r}
+df_model <- as.data.frame(df_model)
+```
+
+```{r}
+sapply(df_model, function(x) sum(is.na(x)))
+```
+
+```{r}
+na_counts <- sapply(df_model, function(x) sum(is.na(x)))
+print(na_counts[na_counts > 0])  # Solo muestra las columnas con NA
+```
+
+```{r}
+str(df_model)
+```
+
+```{r}
+# Ensure df_model is a data frame
+df_model <- as.data.frame(df_scaled_ml[, c(features, target), drop = FALSE])
+
+# Convert all columns to numeric safely
+df_model <- df_model %>%
+  mutate(across(everything(), ~ suppressWarnings(as.numeric(.)))) 
+
+# Replace NA values with the column mean
+df_model <- df_model %>%
+  mutate(across(everything(), ~ ifelse(is.na(.), mean(., na.rm = TRUE), .)))
+
+# Verify structure and NA count
+print(str(df_model))
+print(colSums(is.na(df_model)))  # Should return all zeros if NAs were handled correctly
+```
+
+```{r}
+# Ensure that df_scaled_ml is a data frame
+df_scaled_ml <- as.data.frame(df_scaled_ml)
+
+# Verify column names before extraction
+print(colnames(df_scaled_ml))
+
+# Extract only the required columns correctly
+df_model <- df_scaled_ml[, c(features, target), drop = FALSE]
+
+# Convert all columns to numeric safely
+df_model <- df_model %>%
+  mutate(across(everything(), ~ suppressWarnings(as.numeric(.)))) 
+
+# Replace NA values with the column mean
+df_model <- df_model %>%
+  mutate(across(everything(), ~ ifelse(is.na(.), mean(., na.rm = TRUE), .)))
+
+# Verify the structure and count of NAs
+print(str(df_model))
+print(colSums(is.na(df_model)))  # Should return all zeros
+```
+
+```{r}
+# Set seed for reproducibility
+set.seed(123)
+
+# Split data into training (80%) and testing (20%) sets
+train_index <- createDataPartition(df_model$scaled_winsor_jump_height_cm, p = 0.8, list = FALSE)
+
+# Create training and testing sets
+train_data <- df_model[train_index, ]
+test_data  <- df_model[-train_index, ]
+
+# Verify dimensions
+print(dim(train_data))  # Should be ~ 80% of total rows
+print(dim(test_data))   # Should be ~ 20% of total rows
+```
+
+```{r}
+# Train Random Forest Model
+set.seed(123)  # Ensure reproducibility
+
+rf_model <- randomForest(
+  scaled_winsor_jump_height_cm ~ ., 
+  data = train_data, 
+  ntree = 500, 
+  importance = TRUE
+)
+
+# Print model summary
+print(rf_model)
+
+# Evaluate variable importance
+varImpPlot(rf_model)
+```
+
+## Evaluate the Model with Test Data
+
+```{r}
+# Predict on test set
+predictions <- predict(rf_model, newdata = test_data)
+
+# Compute performance metrics
+rf_mse <- mean((predictions - test_data[[target]])^2)  # Mean Squared Error
+rf_rmse <- sqrt(rf_mse)  # Root Mean Squared Error
+rf_r2 <- 1 - (sum((predictions - test_data[[target]])^2) / sum((test_data[[target]] - mean(test_data[[target]]))^2))  # R-squared
+
+# Print results
+cat("Random Forest Performance Metrics on Test Data:\n")
+cat("MSE:", rf_mse, "\n")
+cat("RMSE:", rf_rmse, "\n")
+cat("R-squared:", rf_r2, "\n")
+```
+
+# SHAP
+
+```{r}
+# Check column names in train_data_df
+print("Columns in train_data_df:")
+print(colnames(train_data_df))
+
+# Check if all features exist in train_data_df
+missing_features <- setdiff(features, colnames(train_data_df))
+if (length(missing_features) > 0) {
+  stop(paste("Missing features in train_data_df:", paste(missing_features, collapse = ", ")))
+} else {
+  print("✅ All required features are present in train_data_df.")
+}
+
+# Check structure of train_data_df
+print("Structure of train_data_df:")
+str(train_data_df)
+```
+
+```{r}
+# Load necessary libraries
+library(iml)
+library(dplyr)
+library(tidyr)
+
+# Convert train_data to a proper dataframe
+train_data_df <- as.data.frame(train_data)
+
+# Check data structure
+print("✅ Checking data structure before SHAP computation:")
+print(dim(train_data_df))
+print(colnames(train_data_df))
+
+# Ensure that features exist in train_data_df
+missing_features <- setdiff(features, colnames(train_data_df))
+if (length(missing_features) > 0) {
+  stop(paste("❌ Missing features in train_data_df:", paste(missing_features, collapse = ", ")))
+}
+
+# Create Predictor object for SHAP analysis
+predictor_rf <- Predictor$new(rf_model, data = train_data_df[, features], y = train_data_df[[target]])
+
+# Compute SHAP values for a sample of 100 observations
+set.seed(123)
+sample_indices <- sample(seq_len(nrow(train_data_df)), 100)  # Ensure valid sample selection
+
+shapley_results <- lapply(sample_indices, function(i) {
+  x_interest <- train_data_df[i, features, drop = FALSE]  # Ensure correct format for single-row dataframe
+  shapley <- Shapley$new(predictor_rf, x.interest = x_interest)
+  shap_values <- shapley$results
+  shap_values$id <- i  # Add row identifier
+  return(shap_values)
+})
+
+# Combine SHAP results into a single DataFrame
+shap_rf_df <- bind_rows(shapley_results)
+
+# Check SHAP DataFrame structure before selection
+print("✅ SHAP Computation Completed Successfully:")
+str(shap_rf_df)
+
+# Verify column names before selection
+print("Columns in SHAP dataframe:")
+print(colnames(shap_rf_df))
+
+# Ensure that required columns exist before selecting
+required_columns <- c("id", "feature", "phi")
+missing_columns <- setdiff(required_columns, colnames(shap_rf_df))
+
+if (length(missing_columns) > 0) {
+  stop(paste("❌ Missing required columns in SHAP dataframe:", paste(missing_columns, collapse = ", ")))
+}
+
+# Select only relevant columns
+shap_rf_clean <- dplyr::select(shap_rf_df, id, feature, phi)
+
+# Display first rows of the final SHAP results
+print("✅ Final SHAP DataFrame after selection:")
+head(shap_rf_clean)
+```
+
+```{r}
+# Load necessary libraries
+library(ggplot2)
+library(dplyr)
+
+# Define custom labels for better readability in the paper
+feature_labels <- c(
+  "scaled_body_weight_kg" = "Body Weight (kg)",
+  "scaled_Height_cm" = "Height (cm)",
+  "scaled_Leg_Length_cm" = "Leg Length (cm)",
+  "scaled_Height_90_cm" = "Height at 90° (cm)",
+  "scaled_Lever_cm" = "Lever Length (cm)",
+  "scaled_winsor_force_N" = "Force (N)",
+  "scaled_winsor_velocity_m_s" = "Velocity (m/s)",
+  "scaled_winsor_power_W" = "Power (W)",
+  "scaled_winsor_impulse_N_kg" = "Impulse (N/kg)"
+)
+
+# Apply custom labels
+shap_rf_df <- shap_rf_df %>%
+  mutate(feature = factor(feature, levels = names(feature_labels), labels = feature_labels))
+
+# Generate SHAP Summary Plot
+ggplot(shap_rf_df, aes(x = phi, y = feature, fill = feature)) +
+  geom_boxplot(alpha = 0.7) +
+  scale_fill_viridis_d(option = "plasma") +
+  labs(
+    title = "SHAP Summary Plot",
+    x = "SHAP Value",
+    y = "Feature Importance",
+    fill = "Feature"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(legend.position = "none")
+```
+
+```{r}
+# Check unique values of feature column
+print(unique(shap_rf_df$feature))
+
+# Check if the selected feature has valid SHAP values
+selected_feature <- "scaled_winsor_velocity_m_s"
+shap_subset <- shap_rf_df %>% filter(feature == selected_feature)
+print(head(shap_subset))
+
+# Ensure feature.value is numeric
+shap_rf_df <- shap_rf_df %>%
+  mutate(feature.value = as.numeric(gsub(".*=", "", feature.value)))
+
+# Check again
+print(head(shap_rf_df %>% filter(feature == selected_feature)))
+```
+
+```{r}
+# Check unique feature values
+selected_feature <- "Velocity (m/s)"
+
+# Check how many rows match the selected feature
+shap_subset <- shap_rf_df %>% filter(feature == selected_feature)
+print(nrow(shap_subset))  # Should be > 0
+
+# Print a few rows
+print(head(shap_subset))
+```
+
+```{r}
+# Ensure feature.value is numeric
+shap_rf_df <- shap_rf_df %>%
+  mutate(feature.value = as.numeric(gsub(".*=", "", feature.value)))
+
+# Check if conversion was successful
+print(str(shap_rf_df$feature.value))
+print(head(shap_rf_df$feature.value))
+```
+
+## SHAP Dependence
+
+```{r}
+# Ensure feature names match exactly
+print(unique(shap_rf_df$feature))  # Check exact feature names
+
+# Filter SHAP values for the selected feature
+shap_subset <- shap_rf_df %>% filter(feature == "Velocity (m/s)")
+
+# Check number of rows to confirm filtering worked
+print(nrow(shap_subset))
+
+# Generate SHAP Dependence Plot
+ggplot(shap_subset, aes(x = feature.value, y = phi)) +
+  geom_point(alpha = 0.6, color = "blue") +
+  geom_smooth(method = "loess", color = "red", se = FALSE) +
+  labs(
+    title = "SHAP Dependence Plot: Velocity (m/s)",
+    x = "Velocity (m/s)",
+    y = "SHAP Value"
+  ) +
+  theme_minimal(base_size = 16)
+```
+
+```{r}
+# Load necessary libraries
+library(ggplot2)
+library(dplyr)
+
+# List of selected features for dependence plots
+selected_features <- c("Power (W)", "Force (N)", "Impulse (N/kg)", "Height at 90° (cm)")
+
+# Generate and display dependence plots for each feature
+for (feature_name in selected_features) {
+  
+  # Filter SHAP values for the selected feature
+  shap_subset <- shap_rf_df %>% filter(feature == feature_name)
+  
+  # Generate SHAP Dependence Plot
+  plot <- ggplot(shap_subset, aes(x = feature.value, y = phi)) +
+    geom_point(alpha = 0.6, color = "blue") +
+    geom_smooth(method = "loess", color = "red", se = FALSE) +
+    labs(
+      title = paste("SHAP Dependence Plot:", feature_name),
+      x = feature_name,
+      y = "SHAP Value"
+    ) +
+    theme_minimal(base_size = 16)
+  
+  # Display the plot
+  print(plot)  # ✅ Muestra la gráfica en la consola de R
+  
+  # Pausa para visualizar antes de continuar con la siguiente
+  readline(prompt = "Press [Enter] to show the next plot...")
+}
+
+# Confirmation message
+print("✅ SHAP Dependence Plots displayed for all selected features.")
+
+```
+
+### Force Plot
+
+```{r}
+# Load necessary libraries
+library(iml)
+library(ggplot2)
+library(dplyr)
+
+# Select an instance for the Force Plot
+selected_id <- 10  # Adjust based on instance to analyze
+x_interest <- train_data_df[selected_id, features, drop = FALSE]
+
+# Compute SHAP values for the selected instance
+shapley_force <- Shapley$new(predictor_rf, x.interest = x_interest)
+
+# Convert SHAP results to a dataframe
+force_df <- shapley_force$results %>%
+  arrange(desc(phi))  # Order by SHAP impact
+
+# Ensure feature column is character type
+force_df$feature <- as.character(force_df$feature)
+
+# Define feature name mapping (for clean labels)
+feature_labels <- c(
+  "scaled_body_weight_kg" = "Body Weight (kg)",
+  "scaled_Height_cm" = "Height (cm)",
+  "scaled_Leg_Length_cm" = "Leg Length (cm)",
+  "scaled_Height_90_cm" = "Height at 90° (cm)",
+  "scaled_Lever_cm" = "Lever Length (cm)",
+  "scaled_winsor_force_N" = "Force (N)",
+  "scaled_winsor_velocity_m_s" = "Velocity (m/s)",
+  "scaled_winsor_power_W" = "Power (W)",
+  "scaled_winsor_impulse_N_kg" = "Impulse (N/kg)"
+)
+
+# Apply clean labels safely using match and replacement
+force_df$feature <- ifelse(force_df$feature %in% names(feature_labels), 
+                           feature_labels[force_df$feature], force_df$feature)
+
+# Convert back to factor with ordered levels
+force_df$feature <- factor(force_df$feature, levels = rev(unique(force_df$feature)))
+
+# Create Improved Force Plot
+ggplot(force_df, aes(x = phi, y = reorder(feature, phi), fill = phi > 0)) +
+  geom_bar(stat = "identity", width = 0.6, show.legend = FALSE, color = "black") +
+  scale_fill_manual(values = c("TRUE" = "#2C3E50", "FALSE" = "#E74C3C")) +  # Dark blue for positive, red for negative
+  labs(
+    title = "SHAP Force Plot - Feature Contribution",
+    x = "SHAP Value (Impact on Model Output)",
+    y = "Feature Importance"
+  ) +
+  theme_minimal(base_size = 18) +
+  theme(
+    axis.text.y = element_text(size = 14, face = "bold"),
+    axis.text.x = element_text(size = 12),
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5)
+  )
+```
+
+### Waterfall Plot
+
+```{r}
+# Load necessary libraries
+library(iml)
+library(ggplot2)
+library(dplyr)
+
+# Select an instance for the Waterfall Plot
+selected_id <- 10  # Adjust according to the instance to analyze
+x_interest <- train_data_df[selected_id, features, drop = FALSE]
+
+# Compute SHAP values for the selected instance
+shapley_waterfall <- Shapley$new(predictor_rf, x.interest = x_interest)
+
+# Convert SHAP results to a dataframe
+waterfall_df <- shapley_waterfall$results %>%
+  arrange(desc(phi))  # Order by SHAP impact
+
+# Define feature name mapping (for clean labels)
+feature_labels <- tibble(
+  feature = c("scaled_body_weight_kg", "scaled_Height_cm", "scaled_Leg_Length_cm", 
+              "scaled_Height_90_cm", "scaled_Lever_cm", "scaled_winsor_force_N", 
+              "scaled_winsor_velocity_m_s", "scaled_winsor_power_W", "scaled_winsor_impulse_N_kg"),
+  clean_label = c("Body Weight (kg)", "Height (cm)", "Leg Length (cm)", 
+                  "Height at 90° (cm)", "Lever Length (cm)", "Force (N)", 
+                  "Velocity (m/s)", "Power (W)", "Impulse (N/kg)")
+)
+
+# Merge for proper labeling
+waterfall_df <- waterfall_df %>%
+  left_join(feature_labels, by = "feature") %>%
+  mutate(feature = factor(clean_label, levels = rev(feature_labels$clean_label)))  # Maintain order
+
+# Compute cumulative sum for Waterfall effect
+waterfall_df$cumulative <- cumsum(waterfall_df$phi)
+
+# Create Waterfall Plot
+waterfall_plot <- ggplot(waterfall_df, aes(x = feature, y = phi, fill = cumulative)) +
+  geom_col(show.legend = FALSE, width = 0.7) +
+  geom_text(aes(label = round(phi, 3)), hjust = ifelse(waterfall_df$phi > 0, -0.1, 1.1), size = 5) +
+  labs(
+    title = "SHAP Waterfall Plot",
+    x = "Feature Importance",
+    y = "SHAP Value"
+  ) +
+  theme_minimal(base_size = 16) +
+  coord_flip()
+
+# Display the plot
+print(waterfall_plot)
+
+# Save the plot
+ggsave("SHAP_Waterfall_Plot.png", plot = waterfall_plot, width = 8, height = 5)
+
+# Confirmation message
+print("✅ SHAP Waterfall Plot generated successfully.")
+```
+
+### SHAP Interaction Plot
+
+```{r}
+# Load necessary libraries
+library(iml)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# Step 1: Compute SHAP interaction values
+interaction_effects <- Interaction$new(predictor_rf)
+
+# Step 2: Extract interaction data
+interaction_df <- interaction_effects$results
+
+# Step 3: Debugging - Print column names before renaming
+print("🔍 Column names in interaction_df BEFORE rename:")
+print(colnames(interaction_df))
+
+# Step 4: Ensure '.feature' exists before renaming
+if (".feature" %in% colnames(interaction_df)) {
+  
+  # Rename .feature to feature
+  interaction_df <- interaction_df %>%
+    dplyr::rename(feature = .feature)
+
+  print("✅ '.feature' successfully renamed to 'feature'.")
+  
+} else {
+  
+  # Stop execution if '.feature' column does not exist
+  stop("🚨 Error: '.feature' column not found in interaction_df! Check column names above.")
+}
+
+# Step 5: Debugging - Print column names after renaming
+print("✅ Column names in interaction_df AFTER rename:")
+print(colnames(interaction_df))
+
+# Step 6: Ensure feature column exists before proceeding
+if (!"feature" %in% colnames(interaction_df)) {
+  stop("🚨 Error: 'feature' column not found in interaction_df! Check colnames(interaction_df).")
+}
+
+# Step 7: Define feature name mapping for clean visualization
+feature_labels <- tibble(
+  feature = c("scaled_body_weight_kg", "scaled_Height_cm", "scaled_Leg_Length_cm", 
+              "scaled_Height_90_cm", "scaled_Lever_cm", "scaled_winsor_force_N", 
+              "scaled_winsor_velocity_m_s", "scaled_winsor_power_W", "scaled_winsor_impulse_N_kg"),
+  clean_label = c("Body Weight (kg)", "Height (cm)", "Leg Length (cm)", 
+                  "Height at 90° (cm)", "Lever Length (cm)", "Force (N)", 
+                  "Velocity (m/s)", "Power (W)", "Impulse (N/kg)")
+)
+
+# Step 8: Ensure feature columns are in correct format before joining
+interaction_df <- interaction_df %>%
+  mutate(feature = as.character(feature))  
+feature_labels <- feature_labels %>%
+  mutate(feature = as.character(feature))  
+
+# Step 9: Merge SHAP interaction values with clean feature labels
+interaction_df <- interaction_df %>%
+  left_join(feature_labels, by = "feature")
+
+# Debugging - Check if clean_label exists
+print("🔍 Column names in interaction_df after left_join():")
+print(colnames(interaction_df))
+
+# Step 10: Ensure clean_label exists before renaming
+if (!"clean_label" %in% colnames(interaction_df)) {
+  stop("🚨 Error: 'clean_label' not found in interaction_df after join! Check feature matching.")
+}
+
+# Step 11: Rename feature column
+interaction_df <- interaction_df %>%
+  dplyr::rename(main_feature = clean_label)
+
+# Step 12: **Check if pivot_longer() is needed**
+if (any(grepl("^scaled_", colnames(interaction_df)))) {
+  
+  print("✅ Detected 'scaled_' columns, proceeding with pivot_longer()")
+  
+  # Transform data to long format for interaction mapping
+  interaction_df <- interaction_df %>%
+    pivot_longer(
+      cols = starts_with("scaled_"), 
+      names_to = "interacting_feature", 
+      values_to = "interaction_value"
+    )
+  
+} else {
+  
+  print("⚠️ No 'scaled_' columns found. Using `.interaction` instead.")
+  
+  # Rename `.interaction` directly if it contains interaction values
+  interaction_df <- interaction_df %>%
+    dplyr::rename(interaction_value = .interaction)  
+
+  # **Check if interacting_feature exists, otherwise create it**
+  if (!"interacting_feature" %in% colnames(interaction_df)) {
+    interaction_df <- interaction_df %>%
+      mutate(interacting_feature = "All Features")  
+  }
+}
+
+# Step 13: Validate if interacting_feature column exists before join
+if (!"interacting_feature" %in% colnames(interaction_df)) {
+  stop("🚨 Error: 'interacting_feature' column not found! Check colnames(interaction_df).")
+}
+
+# Step 14: **Fix select() error by ensuring correct column names**
+if (!all(c("main_feature", "interacting_feature", "interaction_value") %in% colnames(interaction_df))) {
+  stop("🚨 Error: One or more required columns (main_feature, interacting_feature, interaction_value) are missing!")
+}
+
+# Step 15: Ensure correct factor levels for visualization
+interaction_df$main_feature <- factor(interaction_df$main_feature, levels = unique(interaction_df$main_feature))
+interaction_df$interacting_feature <- factor(interaction_df$interacting_feature, levels = unique(interaction_df$interacting_feature))
+
+# Step 16: Generate SHAP Interaction Plot
+interaction_plot <- ggplot(interaction_df, aes(x = main_feature, y = interacting_feature, fill = interaction_value)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
+  labs(
+    title = "SHAP Interaction Plot",
+    x = "Main Feature",
+    y = "Interacting Feature",
+    fill = "Interaction Value"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 14),
+    axis.text.y = element_text(size = 14),
+    plot.title = element_text(size = 18, face = "bold"),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  )
+
+# Step 17: Display the plot
+print(interaction_plot)
+
+# Step 18: Save the plot
+ggsave("SHAP_Interaction_Plot.png", plot = interaction_plot, width = 8, height = 5, dpi = 300)
+
+# Step 19: Confirmation message
+print("✅ SHAP Interaction Plot generated successfully.")
+```
+
+## Feature Importance SHAP
+
+```{r}
+# Load necessary libraries
+library(iml)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# Ensure correct dplyr version
+if (packageVersion("dplyr") < "1.0.0") {
+  stop("Error: Your dplyr version is outdated. Please update it with install.packages('dplyr').")
+}
+
+# Compute SHAP Feature Importance
+shap_importance <- FeatureImp$new(predictor_rf, loss = "mse")
+
+# Convert results to dataframe
+shap_importance_df <- shap_importance$results
+
+# Debugging: Check column names before join
+print("Column names in shap_importance_df BEFORE join:")
+print(colnames(shap_importance_df))
+
+# Define feature name mapping for clean visualization
+feature_labels <- tibble(
+  feature = c("scaled_body_weight_kg", "scaled_Height_cm", "scaled_Leg_Length_cm",
+              "scaled_Height_90_cm", "scaled_Lever_cm", "scaled_winsor_force_N",
+              "scaled_winsor_velocity_m_s", "scaled_winsor_power_W", "scaled_winsor_impulse_N_kg"),
+  clean_label = c("Body Weight (kg)", "Height (cm)", "Leg Length (cm)",
+              "Height at 90° (cm)", "Lever Length (cm)", "Force (N)",
+              "Velocity (m/s)", "Power (W)", "Impulse (N/kg)")
+)
+
+# Ensure 'feature' column exists before merging
+if (!"feature" %in% colnames(shap_importance_df)) {
+  stop("Error: 'feature' column not found in shap_importance_df.")
+}
+
+# Merge SHAP results with feature labels
+shap_importance_df <- shap_importance_df %>%
+  left_join(feature_labels, by = "feature")
+
+# Debugging: Check column names after join
+print("Column names in shap_importance_df AFTER join:")
+print(colnames(shap_importance_df))
+
+# Ensure 'clean_label' exists before proceeding
+if (!"clean_label" %in% colnames(shap_importance_df)) {
+  stop("Error: 'clean_label' column not found after join. Check feature_labels mapping.")
+}
+
+# Identify the correct importance column dynamically
+importance_column <- colnames(shap_importance_df)[grepl("importance$", colnames(shap_importance_df))]
+
+if (length(importance_column) == 0) {
+  stop("Error: No valid 'importance' column found. Check column names.")
+} else {
+  print(paste("Using importance column:", importance_column))
+}
+
+# Convert feature names to clean labels and assign importance directly
+shap_importance_df <- shap_importance_df %>%
+  mutate(feature = factor(clean_label, levels = rev(unique(clean_label))))
+
+# Extract the importance column and assign it directly
+shap_importance_df$importance <- shap_importance_df[[importance_column]]
+
+# Select only the feature and importance columns using direct indexing
+shap_importance_df <- shap_importance_df[, c("feature", "importance")]
+
+# Debugging: Confirm structure
+print("Final shap_importance_df structure:")
+print(str(shap_importance_df))
+
+# Plot Feature Importance
+shap_importance_plot <- ggplot(shap_importance_df, aes(x = importance, y = feature)) +
+  geom_col(fill = "steelblue") +
+  labs(
+    title = "SHAP Feature Importance",
+    x = "Mean Absolute SHAP Value",
+    y = "Feature"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    axis.text.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12),
+    plot.title = element_text(size = 18, face = "bold")
+  )
+
+# Display the plot
+print(shap_importance_plot)
+
+# Save the plot
+ggsave("SHAP_Feature_Importance.png", plot = shap_importance_plot, width = 8, height = 5, dpi = 300)
+
+# Confirmation message
+print("SHAP Feature Importance Plot generated successfully.")
+```
+
+# Variance Decomposition
+
+```{r}
+# Load necessary libraries
+library(lme4)       # For mixed-effects models
+library(tidyverse)  # For data manipulation and visualization
+
+# Ensure correct dplyr version
+if (packageVersion("dplyr") < "1.0.0") {
+  stop("Error: Your dplyr version is outdated. Please update it with install.packages('dplyr').")
+}
+
+# Load the dataset (adjust the file path as needed)
+file_path <- "~/Desktop/Dataset_MyJump.SHAP.csv"
+df <- read_csv(file_path)
+
+# Check the structure of the dataset
+glimpse(df)
+
+# Ensure categorical variables are factors
+df <- df %>%
+  mutate(
+    team = as.factor(team),
+    sex = as.factor(sex),
+    jump_type = as.factor(jump_type)
+  )
+
+# Check for missing values
+missing_values <- colSums(is.na(df))
+print("Missing values per column:")
+print(missing_values)
+
+# Remove rows with missing values (if necessary)
+df <- df %>% drop_na()
+
+# Define the target variable (e.g., jump height)
+target <- "jump_height_cm"
+
+# Define the fixed and random effects
+fixed_effects <- c("sex", "jump_type")
+random_effects <- c("team")
+
+# Fit a mixed-effects model
+model <- lmer(
+  as.formula(paste(target, "~", paste(fixed_effects, collapse = "+"), "+ (1|", random_effects, ")")),
+  data = df
+)
+
+# Print model summary
+summary(model)
+
+# Extract variance components
+var_components <- VarCorr(model)
+var_random <- as.data.frame(var_components)$vcov[1]  # Variance due to random effects (team)
+var_residual <- sigma(model)^2  # Residual variance
+
+# Total variance
+var_total <- var_random + var_residual
+
+# Proportion of variance explained by random effects (team)
+prop_var_random <- var_random / var_total
+
+# Proportion of variance explained by residuals
+prop_var_residual <- var_residual / var_total
+
+# Print variance decomposition results
+cat("Variance Decomposition Results:\n")
+cat("Proportion of variance due to random effects (team):", round(prop_var_random, 4), "\n")
+cat("Proportion of variance due to residuals:", round(prop_var_residual, 4), "\n")
+
+# Visualize the variance decomposition
+variance_decomp <- data.frame(
+  Component = c("Random Effects (Team)", "Residuals"),
+  Variance = c(prop_var_random, prop_var_residual)
+)
+
+variance_plot <- ggplot(variance_decomp, aes(x = Component, y = Variance, fill = Component)) +
+  geom_bar(stat = "identity", color = "black") +
+  labs(
+    title = "Variance Decomposition of Jump Height",
+    x = "Component",
+    y = "Proportion of Variance"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"
+  )
+
+# Display the plot
+print(variance_plot)
+
+# Save the plot
+ggsave("Variance_Decomposition_Plot.png", plot = variance_plot, width = 8, height = 5, dpi = 300)
+
+# Confirmation message
+print("Variance Decomposition analysis completed successfully.")
+```
+
+```{r}
+# Load necessary libraries
+library(gt)           # For creating beautiful tables
+library(tidyverse)    # For data manipulation and visualization
+library(performance)  # For R² Nakagawa
+library(ggplot2)      # For advanced plotting
+
+# Create a dataframe with variance decomposition results
+variance_decomp_table <- data.frame(
+  Component = c("Random Effects (Team)", "Residuals"),
+  Variance = c(0.4688, 0.5312)  # Replace with your actual values
+)
+
+# Convert the dataframe to a gt table
+table4 <- variance_decomp_table %>%
+  gt() %>%
+  tab_header(
+    title = "Table 4. Variance Decomposition of Jump Height",
+    subtitle = "Proportion of variance explained by random effects and residuals"
+  ) %>%
+  cols_label(
+    Component = "Component",
+    Variance = "Proportion of Variance"
+  ) %>%
+  fmt_number(
+    columns = Variance,
+    decimals = 4
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels()
+  ) %>%
+  tab_style(
+    style = cell_text(align = "center"),
+    locations = cells_body()
+  ) %>%
+  tab_options(
+    table.font.size = 16,
+    heading.title.font.size = 20,
+    heading.subtitle.font.size = 18,
+    column_labels.font.size = 18,
+    data_row.padding = px(10)
+  )
+
+# Display the table
+print(table4)
+
+# Save the table as an image (optional)
+gtsave(table4, "Table4_Variance_Decomposition.png")
+
+# Compute R² Nakagawa for variance decomposition
+r2_results <- r2_nakagawa(model)
+print("R² Nakagawa Results:")
+print(r2_results)
+
+# Add R² Nakagawa results to the variance decomposition table
+variance_decomp_table <- rbind(
+  variance_decomp_table,
+  data.frame(
+    Component = c("R² Marginal (Fixed Effects)", "R² Conditional (Fixed + Random Effects)"),
+    Variance = c(r2_results$R2_marginal, r2_results$R2_conditional)
+  )
+)
+
+# Convert the updated dataframe to a gt table
+table4_updated <- variance_decomp_table %>%
+  gt() %>%
+  tab_header(
+    title = "Table 4. Variance Decomposition of Jump Height",
+    subtitle = "Proportion of variance explained by random effects, residuals, and R² Nakagawa"
+  ) %>%
+  cols_label(
+    Component = "Component",
+    Variance = "Proportion of Variance"
+  ) %>%
+  fmt_number(
+    columns = Variance,
+    decimals = 4
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels()
+  ) %>%
+  tab_style(
+    style = cell_text(align = "center"),
+    locations = cells_body()
+  ) %>%
+  tab_options(
+    table.font.size = 16,
+    heading.title.font.size = 20,
+    heading.subtitle.font.size = 18,
+    column_labels.font.size = 18,
+    data_row.padding = px(10)
+  )
+
+# Display the updated table
+print(table4_updated)
+
+# Save the updated table as an image (optional)
+gtsave(table4_updated, "Table4_Variance_Decomposition_Updated.png")
+
+# Visualize the variance decomposition with labels
+variance_plot <- ggplot(variance_decomp, aes(x = Component, y = Variance, fill = Component)) +
+  geom_bar(stat = "identity", color = "black") +
+  geom_text(aes(label = scales::percent(Variance, accuracy = 0.1)), vjust = -0.5, size = 5) +
+  labs(
+    title = "Variance Decomposition of Jump Height",
+    x = "Component",
+    y = "Proportion of Variance"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"
+  )
+
+# Display the plot
+print(variance_plot)
+
+# Save the plot
+ggsave("Variance_Decomposition_Plot.png", plot = variance_plot, width = 8, height = 5, dpi = 300)
+```
+
+```{r}
+# Load necessary libraries
+library(gt)       # For creating beautiful tables
+library(tidyverse) # For data manipulation
+
+# Create a dataframe with variance decomposition results
+variance_decomp_table <- data.frame(
+  Component = c("   Random Effects (Team)", "   Residuals", "R² Marginal (Fixed Effects)", "R² Conditional (Fixed + Random Effects)"),
+  Variance = c(0.4688, 0.5312, 0.1364, 0.5413)  # Replace with your actual values
+)
+
+# Convert the dataframe to a gt table
+table4 <- variance_decomp_table %>%
+  gt() %>%
+  tab_header(
+    title = "Table 4. Variance Decomposition of Jump Height",
+    subtitle = "Proportion of variance explained by random effects, residuals, and R² Nakagawa"
+  ) %>%
+  cols_label(
+    Component = "Component",
+    Variance = "Proportion of Variance"
+  ) %>%
+  fmt_number(
+    columns = Variance,
+    decimals = 4
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels()
+  ) %>%
+  tab_style(
+    style = cell_text(align = "left"),  # Align text to the left for the "Component" column
+    locations = cells_body(columns = Component)
+  ) %>%
+  tab_style(
+    style = cell_text(align = "center"),
+    locations = cells_body(columns = Variance)
+  ) %>%
+  tab_options(
+    table.font.size = 16,
+    heading.title.font.size = 20,
+    heading.subtitle.font.size = 18,
+    column_labels.font.size = 18,
+    data_row.padding = px(10)
+  )
+
+# Display the table
+print(table4)
+
+# Save the table as an image (optional)
+gtsave(table4, "Table4_Variance_Decomposition_Centered.png")
+```
+
+## Biomechanical Variables Analysis
+
+```{r}
+# Load necessary libraries
+library(lme4)       # For mixed-effects models
+library(tidyverse)  # For data manipulation
+
+# Ensure correct dplyr version
+if (packageVersion("dplyr") < "1.0.0") {
+  stop("Error: Your dplyr version is outdated. Please update it with install.packages('dplyr').")
+}
+
+# Load the dataset (adjust the file path as needed)
+file_path <- "~/Desktop/Dataset_MyJump.SHAP.csv"
+df <- read_csv(file_path)
+
+# Check the structure of the dataset
+glimpse(df)
+
+# Ensure categorical variables are factors
+df <- df %>%
+  mutate(
+    team = as.factor(team),
+    sex = as.factor(sex),
+    jump_type = as.factor(jump_type)
+  )
+
+# Check for missing values
+missing_values <- colSums(is.na(df))
+print("Missing values per column:")
+print(missing_values)
+
+# Remove rows with missing values (if necessary)
+df <- df %>% drop_na()
+
+# Define the target variable (e.g., jump height)
+target <- "jump_height_cm"
+
+# Define the fixed and random effects
+# Fixed effects: Include biomechanical variables (force, velocity, power, impulse)
+fixed_effects <- c("sex", "jump_type", "force_N", "velocity_m_s", "power_W", "impulse_N_kg")
+random_effects <- c("team")
+
+# Fit a mixed-effects model with biomechanical variables
+model_biomechanics <- lmer(
+  as.formula(paste(target, "~", paste(fixed_effects, collapse = "+"), "+ (1|", random_effects, ")")),
+  data = df
+)
+
+# Print model summary
+summary(model_biomechanics)
+
+# Compare with the original model (without biomechanical variables)
+original_model <- lmer(
+  as.formula(paste(target, "~ sex + jump_type + (1|", random_effects, ")")),
+  data = df
+)
+
+# Print original model summary
+summary(original_model)
+
+# Perform ANOVA to compare the two models
+anova_results <- anova(original_model, model_biomechanics)
+print("ANOVA Results (Original Model vs. Biomechanics Model):")
+print(anova_results)
+
+# Extract variance components for the biomechanics model
+var_components_biomechanics <- VarCorr(model_biomechanics)
+var_random_biomechanics <- as.data.frame(var_components_biomechanics)$vcov[1]  # Variance due to random effects (team)
+var_residual_biomechanics <- sigma(model_biomechanics)^2  # Residual variance
+
+# Total variance for the biomechanics model
+var_total_biomechanics <- var_random_biomechanics + var_residual_biomechanics
+
+# Proportion of variance explained by random effects (team)
+prop_var_random_biomechanics <- var_random_biomechanics / var_total_biomechanics
+
+# Proportion of variance explained by residuals
+prop_var_residual_biomechanics <- var_residual_biomechanics / var_total_biomechanics
+
+# Print variance decomposition results for the biomechanics model
+cat("Variance Decomposition Results (Biomechanics Model):\n")
+cat("Proportion of variance due to random effects (team):", round(prop_var_random_biomechanics, 4), "\n")
+cat("Proportion of variance due to residuals:", round(prop_var_residual_biomechanics, 4), "\n")
+
+# Compute R² Nakagawa for the biomechanics model
+r2_results_biomechanics <- r2_nakagawa(model_biomechanics)
+print("R² Nakagawa Results (Biomechanics Model):")
+print(r2_results_biomechanics)
+
+# Visualize the variance decomposition for the biomechanics model
+variance_decomp_biomechanics <- data.frame(
+  Component = c("Random Effects (Team)", "Residuals"),
+  Variance = c(prop_var_random_biomechanics, prop_var_residual_biomechanics)
+)
+
+variance_plot_biomechanics <- ggplot(variance_decomp_biomechanics, aes(x = Component, y = Variance, fill = Component)) +
+  geom_bar(stat = "identity", color = "black") +
+  geom_text(aes(label = scales::percent(Variance, accuracy = 0.1)), vjust = -0.3, size = 5, color = "black") +
+  labs(
+    title = "Variance Decomposition of Jump Height (Biomechanics Model)",
+    x = "Component",
+    y = "Proportion of Variance"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none"
+  )
+
+# Display the plot
+print(variance_plot_biomechanics)
+
+# Save the plot
+ggsave("Variance_Decomposition_Biomechanics_Plot.png", plot = variance_plot_biomechanics, width = 8, height = 5, dpi = 300)
+
+# Confirmation message
+print("Biomechanical Variables Analysis completed successfully.")
+```
+
+```{r}
+# Load necessary libraries
+library(gt)       # For creating beautiful tables
+library(tidyverse) # For data manipulation
+
+# Extract fixed effects coefficients and statistics
+fixed_effects <- summary(model_biomechanics)$coefficients
+fixed_effects_df <- as.data.frame(fixed_effects)
+fixed_effects_df$Variable <- rownames(fixed_effects_df)
+
+# Rename columns for clarity
+colnames(fixed_effects_df) <- c("Estimate", "Std. Error", "t value", "Variable")
+
+# Reorder columns
+fixed_effects_df <- fixed_effects_df %>%
+  select(Variable, Estimate, `Std. Error`, `t value`)
+
+# Clean up variable names for better readability
+fixed_effects_df <- fixed_effects_df %>%
+  mutate(
+    Variable = case_when(
+      Variable == "(Intercept)" ~ "Intercept",
+      Variable == "sexMale" ~ "Sex Male",
+      Variable == "jump_typeCMJFree" ~ "Jump Type CMJFree",
+      Variable == "jump_typeSJ" ~ "Jump Type SJ",
+      Variable == "force_N" ~ "Force (N)",
+      Variable == "velocity_m_s" ~ "Velocity (m/s)",
+      Variable == "power_W" ~ "Power (W)",
+      Variable == "impulse_N_kg" ~ "Impulse (N/kg)",
+      TRUE ~ Variable  # Default case
+    )
+  )
+
+# Convert the dataframe to a gt table
+table5 <- fixed_effects_df %>%
+  gt() %>%
+  tab_header(
+    title = "Table 5. Fixed Effects Coefficients (Biomechanics Model)",
+    subtitle = "Impact of biomechanical variables on jump height"
+  ) %>%
+  cols_label(
+    Variable = "Variable",
+    Estimate = "Estimate",
+    `Std. Error` = "Std. Error",
+    `t value` = "t value"
+  ) %>%
+  fmt_number(
+    columns = c(Estimate, `Std. Error`, `t value`),
+    decimals = 4
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels()
+  ) %>%
+  tab_style(
+    style = cell_text(align = "left"),  # Align "Variable" column to the left
+    locations = cells_body(columns = Variable)
+  ) %>%
+  tab_style(
+    style = cell_text(align = "center"),
+    locations = cells_body(columns = c(Estimate, `Std. Error`, `t value`))
+  ) %>%
+  tab_options(
+    table.font.size = 16,
+    heading.title.font.size = 20,
+    heading.subtitle.font.size = 18,
+    column_labels.font.size = 18,
+    data_row.padding = px(10)
+  )
+
+# Display the table
+print(table5)
+
+# Save the table as an image (optional)
+gtsave(table5, "Table5_Fixed_Effects_Coefficients_Clean.png")
+```
+
+## Model Comparison AIC, BIC and Likelihood Ratio Test (LRT)
+
+```{r}
+# Install the lmtest package if not already installed
+if (!requireNamespace("lmtest", quietly = TRUE)) {
+  install.packages("lmtest")
+}
+
+# Load the lmtest package
+library(lmtest)
+```
+
+```{r}
+# Load necessary libraries
+library(lme4)       # For mixed-effects models
+library(lmtest)     # For Likelihood Ratio Test (LRT)
+
+# Fit the original model (without biomechanical variables)
+original_model <- lmer(
+  jump_height_cm ~ sex + jump_type + (1 | team),
+  data = df
+)
+
+# Fit the biomechanics model (with biomechanical variables)
+model_biomechanics <- lmer(
+  jump_height_cm ~ sex + jump_type + force_N + velocity_m_s + power_W + impulse_N_kg + (1 | team),
+  data = df
+)
+
+# Compare models using AIC and BIC
+aic_comparison <- AIC(original_model, model_biomechanics)
+bic_comparison <- BIC(original_model, model_biomechanics)
+
+# Perform Likelihood Ratio Test (LRT)
+lrt_results <- anova(original_model, model_biomechanics, test = "LRT")
+
+# Print results
+print("AIC Comparison:")
+print(aic_comparison)
+
+print("BIC Comparison:")
+print(bic_comparison)
+
+print("Likelihood Ratio Test (LRT) Results:")
+print(lrt_results)
+```
+
+```{r}
+# Load necessary libraries
+library(gt)       # For creating beautiful tables
+library(tidyverse) # For data manipulation
+
+# Convert LRT results to a dataframe
+lrt_results_df <- as.data.frame(lrt_results)
+lrt_results_df$Model <- rownames(lrt_results_df)
+
+# Rename columns for clarity
+colnames(lrt_results_df) <- c("npar", "AIC", "BIC", "logLik", "deviance", "Chisq", "Df", "Pr(>Chisq)", "Model")
+
+# Reorder columns
+lrt_results_df <- lrt_results_df %>%
+  select(Model, npar, AIC, BIC, logLik, deviance, Chisq, Df, `Pr(>Chisq)`)
+
+# Clean up model names for better readability
+lrt_results_df <- lrt_results_df %>%
+  mutate(
+    Model = case_when(
+      Model == "original_model" ~ "Original Model",
+      Model == "model_biomechanics" ~ "Biomechanics Model",
+      TRUE ~ Model  # Default case
+    )
+  )
+
+# Convert the dataframe to a gt table
+lrt_table <- lrt_results_df %>%
+  gt() %>%
+  tab_header(
+    title = "Table 6. Likelihood Ratio Test (LRT) Results",
+    subtitle = "Comparison of Original Model vs. Biomechanics Model"
+  ) %>%
+  cols_label(
+    Model = "Model",
+    npar = "Number of Parameters",
+    AIC = "AIC",
+    BIC = "BIC",
+    logLik = "Log-Likelihood",
+    deviance = "Deviance",
+    Chisq = "Chi-Square",
+    Df = "Degrees of Freedom",
+    `Pr(>Chisq)` = "p-value"
+  ) %>%
+  fmt_number(
+    columns = c(AIC, BIC, logLik, deviance, Chisq, `Pr(>Chisq)`),
+    decimals = 4
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels()
+  ) %>%
+  tab_style(
+    style = cell_text(align = "center"),
+    locations = cells_body()
+  ) %>%
+  tab_options(
+    table.font.size = 16,
+    heading.title.font.size = 20,
+    heading.subtitle.font.size = 18,
+    column_labels.font.size = 18,
+    data_row.padding = px(10)
+  )
+
+# Display the table
+print(lrt_table)
+
+# Save the table as an image (optional)
+gtsave(lrt_table, "Table6_LRT_Results.png")
+```
+
+```{r}
+# Load necessary libraries
+library(gt)       # For creating beautiful tables
+library(tidyverse) # For data manipulation
+
+# Create a dataframe to store R² results
+r2_results_df <- data.frame(
+  Model = c("   Original Model", "   Biomechanics Model"),  # Add spaces for alignment
+  Marginal_R2 = c(r2_original$R2_marginal, r2_biomechanics$R2_marginal),
+  Conditional_R2 = c(r2_original$R2_conditional, r2_biomechanics$R2_conditional)
+)
+
+# Convert the dataframe to a gt table
+r2_table <- r2_results_df %>%
+  gt() %>%
+  tab_header(
+    title = "Table 7. Variance Explained (R² Nakagawa)",
+    subtitle = "Comparison of R² Marginal and Conditional for Original and Biomechanics Models"
+  ) %>%
+  cols_label(
+    Model = "Model",
+    Marginal_R2 = "Marginal R²",
+    Conditional_R2 = "Conditional R²"
+  ) %>%
+  fmt_number(
+    columns = c(Marginal_R2, Conditional_R2),
+    decimals = 4
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels()
+  ) %>%
+  tab_style(
+    style = cell_text(align = "left"),  # Align "Model" column to the left
+    locations = cells_body(columns = Model)
+  ) %>%
+  tab_style(
+    style = cell_text(align = "center"),
+    locations = cells_body(columns = c(Marginal_R2, Conditional_R2))
+  ) %>%
+  tab_options(
+    table.font.size = 16,
+    heading.title.font.size = 20,
+    heading.subtitle.font.size = 18,
+    column_labels.font.size = 18,
+    data_row.padding = px(10)
+  )
+
+# Display the table
+print(r2_table)
+
+# Save the table as an image (optional)
+gtsave(r2_table, "Table7_R2_Nakagawa_Centered.png")
+```
+
+# Evaluation of Mixed Model Assumptions
+
+```{r}
+# Load necessary libraries
+library(ggplot2)  # For diagnostic plots
+library(car)      # For Variance Inflation Factor (VIF)
+
+# 1. Check normality of residuals
+residuals_biomechanics <- residuals(model_biomechanics)
+
+# Q-Q plot for normality
+qqnorm(residuals_biomechanics, main = "Q-Q Plot of Residuals")
+qqline(residuals_biomechanics, col = "red")
+
+# Shapiro-Wilk test for normality (only for small datasets)
+if (length(residuals_biomechanics) < 5000) {
+  shapiro_test <- shapiro.test(residuals_biomechanics)
+  print("Shapiro-Wilk Test for Normality:")
+  print(shapiro_test)
+}
+
+# 2. Check homogeneity of variance
+plot(model_biomechanics, resid(.) ~ fitted(.), main = "Residuals vs. Fitted Values")
+
+# 3. Check for outliers
+outliers <- which(abs(residuals_biomechanics) > 3 * sd(residuals_biomechanics))
+print("Outliers detected:")
+print(outliers)
+
+# 4. Check multicollinearity (VIF for fixed effects)
+vif_results <- vif(model_biomechanics)
+print("Variance Inflation Factor (VIF) Results:")
+print(vif_results)
+```
+
+```{r}
+# Load necessary libraries
+library(gt)       # For creating beautiful tables
+library(tidyverse) # For data manipulation
+
+# Convert VIF results to a dataframe
+vif_results_df <- as.data.frame(vif_results)
+vif_results_df$Variable <- rownames(vif_results_df)
+
+# Rename columns for clarity
+colnames(vif_results_df) <- c("GVIF", "Df", "GVIF_Adjusted", "Variable")
+
+# Reorder columns
+vif_results_df <- vif_results_df %>%
+  select(Variable, GVIF, Df, GVIF_Adjusted)
+
+# Clean up variable names for better readability
+vif_results_df <- vif_results_df %>%
+  mutate(
+    Variable = case_when(
+      Variable == "sex" ~ "Sex",
+      Variable == "jump_type" ~ "Jump Type",
+      Variable == "force_N" ~ "Force (N)",
+      Variable == "velocity_m_s" ~ "Velocity (m/s)",
+      Variable == "power_W" ~ "Power (W)",
+      Variable == "impulse_N_kg" ~ "Impulse (N/kg)",
+      TRUE ~ Variable  # Default case
+    )
+  )
+
+# Convert the dataframe to a gt table
+vif_table <- vif_results_df %>%
+  gt() %>%
+  tab_header(
+    title = "Table 8. Variance Inflation Factor (VIF) Results",
+    subtitle = "Assessment of multicollinearity among predictors"
+  ) %>%
+  cols_label(
+    Variable = "Variable",
+    GVIF = "GVIF",
+    Df = "Degrees of Freedom",
+    GVIF_Adjusted = "Adjusted GVIF"
+  ) %>%
+  fmt_number(
+    columns = c(GVIF, GVIF_Adjusted),
+    decimals = 4
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels()
+  ) %>%
+  tab_style(
+    style = cell_text(align = "center"),
+    locations = cells_body()
+  ) %>%
+  tab_options(
+    table.font.size = 16,
+    heading.title.font.size = 20,
+    heading.subtitle.font.size = 18,
+    column_labels.font.size = 18,
+    data_row.padding = px(10)
+  )
+
+# Display the table
+print(vif_table)
+
+# Save the table as an image (optional)
+gtsave(vif_table, "Table8_VIF_Results.png")
+```
+
+## Confidence Intervals for the Coefficients
+
+```{r}
+# Load necessary libraries
+library(ggplot2)  # For creating plots
+library(dplyr)    # For data manipulation
+
+# Extract fixed effects coefficients
+fixed_effects <- summary(model_biomechanics)$coefficients
+fixed_effects_df <- as.data.frame(fixed_effects)
+fixed_effects_df$Variable <- rownames(fixed_effects_df)
+
+# Extract confidence intervals for fixed effects
+confint_biomechanics <- confint(model_biomechanics, method = "Wald")
+confint_biomechanics_df <- as.data.frame(confint_biomechanics)
+confint_biomechanics_df$Variable <- rownames(confint_biomechanics_df)
+
+# Merge coefficients and confidence intervals
+coef_confint_df <- fixed_effects_df %>%
+  select(Variable, Estimate) %>%
+  left_join(confint_biomechanics_df, by = "Variable")
+
+# Clean up variable names for better readability
+coef_confint_df <- coef_confint_df %>%
+  mutate(
+    Variable = case_when(
+      Variable == "(Intercept)" ~ "Intercept",
+      Variable == "sexMale" ~ "Sex Male",
+      Variable == "jump_typeCMJFree" ~ "Jump Type CMJFree",
+      Variable == "jump_typeSJ" ~ "Jump Type SJ",
+      Variable == "force_N" ~ "Force (N)",
+      Variable == "velocity_m_s" ~ "Velocity (m/s)",
+      Variable == "power_W" ~ "Power (W)",
+      Variable == "impulse_N_kg" ~ "Impulse (N/kg)",
+      TRUE ~ Variable  # Default case
+    )
+  )
+
+# Create the plot
+confint_plot <- ggplot(coef_confint_df, aes(x = Variable, y = Estimate, ymin = `2.5 %`, ymax = `97.5 %`)) +
+  geom_pointrange(size = 1, color = "#2C3E50") +  # Dot-and-whisker plot
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +  # Reference line at zero
+  coord_flip() +  # Flip coordinates for better readability
+  labs(
+    title = "Confidence Intervals for Fixed Effects",
+    subtitle = "Impact of biomechanical variables on jump height",
+    x = "Variable",
+    y = "Estimate (95% CI)"
+  ) +
+  theme_minimal(base_size = 16) +  # Minimal theme
+  theme(
+    axis.text.x = element_text(size = 14, face = "bold"),
+    axis.text.y = element_text(size = 14, face = "bold"),
+    axis.title.x = element_text(size = 16, face = "bold"),
+    axis.title.y = element_text(size = 16, face = "bold"),
+    plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 16, hjust = 0.5),
+    panel.grid.major = element_line(color = "gray90"),
+    panel.grid.minor = element_blank()
+  )
+
+# Display the plot
+print(confint_plot)
+
+# Save the plot
+ggsave("Confidence_Intervals_Plot.png", plot = confint_plot, width = 10, height = 6, dpi = 300)
+```
+
+## SHAP Values for Interpretability
+
+```{r}
+install.packages("fastshap")
+```
+
+```{r}
+# Load necessary libraries
+library(iml)       # For SHAP values and model interpretation
+library(lme4)      # For mixed-effects models
+library(ggplot2)   # For plotting
+library(dplyr)     # For data manipulation
+
+# Define a custom predict function for the mixed-effects model
+predict_lmer <- function(model, newdata) {
+  predict(model, newdata = newdata, re.form = NA)  # Predict without random effects
+}
+
+# Prepare the data for SHAP computation
+X <- df[, c("sex", "jump_type", "force_N", "velocity_m_s", "power_W", "impulse_N_kg")]
+
+# Create a predictor object for the model
+predictor <- Predictor$new(
+  model = model_biomechanics,  # Your trained mixed-effects model
+  data = X,                    # Features used in the model
+  predict.fun = predict_lmer   # Custom predict function
+)
+
+# Compute SHAP values using iml
+shap_values <- Shapley$new(
+  predictor, 
+  x.interest = X[1, ]  # Compute SHAP values for the first observation (can be adjusted)
+)
+
+# Extract SHAP values
+shap_results <- shap_values$results
+
+# Summarize SHAP values for visualization
+shap_summary <- shap_results %>%
+  group_by(feature) %>%
+  summarise(mean_shap = mean(phi))  # Calculate mean SHAP value for each feature
+
+# Plot SHAP summary plot
+ggplot(shap_summary, aes(x = mean_shap, y = reorder(feature, mean_shap))) +
+  geom_bar(stat = "identity", fill = "steelblue", alpha = 0.7) +
+  labs(
+    title = "SHAP Values for Biomechanics Model",
+    subtitle = "Variable Importance Based on SHAP Values",
+    x = "Mean SHAP Value (Impact on Model Output)",
+    y = "Features"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(size = 18, face = "bold"),
+    plot.subtitle = element_text(size = 16)
+  )
+
+# Save the plot
+ggsave("SHAP_Values_Plot.png", width = 10, height = 6, dpi = 300)
+```
+
+```{r}
+# Load necessary libraries
+library(iml)
+library(lme4)
+library(ggplot2)
+library(dplyr)
+
+# Define a custom predict function for the mixed-effects model
+predict_lmer <- function(model, newdata) {
+  predict(model, newdata = newdata, re.form = NA)
+}
+
+# Prepare the data for SHAP computation
+X <- df[, c("sex", "jump_type", "force_N", "velocity_m_s", "power_W", "impulse_N_kg")]
+
+# Create a predictor object for the model
+predictor <- Predictor$new(
+  model = model_biomechanics,
+  data = X,
+  predict.fun = predict_lmer
+)
+
+# Compute SHAP values using iml
+shap_values <- Shapley$new(
+  predictor,
+  x.interest = X[1, ]
+)
+
+# Extract SHAP values
+shap_results <- shap_values$results
+
+# Ensure 'feature' is a character vector
+shap_results <- shap_results %>%
+  mutate(feature = as.character(feature))
+
+# ***Verificación Exhaustiva de Nombres de Variables***
+print("Unique values in 'feature' column:")
+print(unique(shap_results$feature))
+print("Structure of shap_results:")
+str(shap_results)
+
+# ***Copiar y Pegar Nombres de Variables desde la Salida de print() y str()***
+feature_labels <- c(
+  "force_N" = "Force (N)",
+  "velocity_m_s" = "Velocity (m/s)",
+  "power_W" = "Power (W)",
+  "impulse_N_kg" = "Impulse (N/kg)",
+  "sex" = "Sex",
+  "jump_type" = "Jump Type"
+)
+
+# ***Usar case_when() como Alternativa a recode()***
+shap_results <- shap_results %>%
+  mutate(feature = case_when(
+    feature == "force_N" ~ "Force (N)",
+    feature == "velocity_m_s" ~ "Velocity (m/s)",
+    feature == "power_W" ~ "Power (W)",
+    feature == "impulse_N_kg" ~ "Impulse (N/kg)",
+    feature == "sex" ~ "Sex",
+    feature == "jump_type" ~ "Jump Type",
+    TRUE ~ feature # Mantener otros valores sin cambios
+  ))
+
+# Summarize SHAP values for visualization
+shap_summary <- shap_results %>%
+  group_by(feature) %>%
+  summarise(mean_shap = mean(phi))
+
+# Plot SHAP summary plot with custom labels
+ggplot(shap_summary, aes(x = mean_shap, y = reorder(feature, mean_shap))) +
+  geom_bar(stat = "identity", fill = "steelblue", alpha = 0.7) +
+  labs(
+    title = "SHAP Values for Biomechanics Model",
+    subtitle = "Variable Importance Based on SHAP Values",
+    x = "Mean SHAP Value (Impact on Model Output)",
+    y = "Features"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(size = 18, face = "bold"),
+    plot.subtitle = element_text(size = 16)
+  )
+
+# Save the plot
+ggsave("SHAP_Values_Plot.png", width = 10, height = 6, dpi = 300)
+```
+
+## Cross-Validation of the Model K-10
+
+```{r}
+# Load necessary libraries
+library(caret)  # For data splitting and cross-validation
+library(lme4)   # For mixed-effects models
+library(dplyr)  # For data manipulation
+
+# Define a custom predict function for the mixed-effects model
+predict_lmer <- function(model, newdata) {
+  predict(model, newdata = newdata, re.form = NA)  # Predict without random effects
+}
+
+# Define the number of folds (k = 10)
+k <- 10
+set.seed(123)  # For reproducibility
+
+# Create folds for cross-validation
+folds <- createFolds(df$jump_height_cm, k = k, list = TRUE, returnTrain = FALSE)
+
+# Initialize vectors to store performance metrics
+rmse_values <- numeric(k)
+mae_values <- numeric(k)
+r2_values <- numeric(k)
+
+# Perform k-fold cross-validation
+for (i in 1:k) {
+  # Split data into training and testing sets
+  test_index <- folds[[i]]
+  train_data <- df[-test_index, ]
+  test_data <- df[test_index, ]
+  
+  # Fit the biomechanics model on the training data
+  model_biomechanics_train <- lmer(
+    jump_height_cm ~ sex + jump_type + force_N + velocity_m_s + power_W + impulse_N_kg + (1 | team),
+    data = train_data
+  )
+  
+  # Predict on the test data
+  predictions <- predict(model_biomechanics_train, newdata = test_data, allow.new.levels = TRUE)
+  
+  # Compute performance metrics
+  rmse_values[i] <- sqrt(mean((test_data$jump_height_cm - predictions)^2))  # Root Mean Squared Error
+  mae_values[i] <- mean(abs(test_data$jump_height_cm - predictions))        # Mean Absolute Error
+  r2_values[i] <- cor(test_data$jump_height_cm, predictions)^2             # R-squared
+}
+
+# Compute average performance metrics across all folds
+avg_rmse <- mean(rmse_values)
+avg_mae <- mean(mae_values)
+avg_r2 <- mean(r2_values)
+
+# Print results
+cat("Average Performance Metrics across", k, "folds:\n")
+cat("RMSE:", avg_rmse, "\n")
+cat("MAE:", avg_mae, "\n")
+cat("R²:", avg_r2, "\n")
+
+# Create a dataframe to store the results
+performance_metrics <- data.frame(
+  Metric = c("RMSE", "MAE", "R²"),
+  Value = c(avg_rmse, avg_mae, avg_r2)
+)
+
+# Print the performance metrics as a table
+print(performance_metrics)
+
+# Save the performance metrics to a CSV file
+write.csv(performance_metrics, "Performance_Metrics_kfold.csv", row.names = FALSE)
+```
+
+```{r}
+# Load necessary libraries
+library(gt)    # For creating beautiful tables
+library(tidyverse) # For data manipulation
+
+# Create a dataframe to store the results
+performance_metrics <- data.frame(
+  Metric = c("RMSE", "MAE", "R²"),
+  Value = c(1.1024321, 0.7192679, 0.9865004)  # Replace with your actual values
+)
+
+# Convert the dataframe to a gt table
+table9 <- performance_metrics %>%
+  gt() %>%
+  tab_header(
+    title = "Table 9. Performance Metrics from k-Fold Cross-Validation",
+    subtitle = "Average performance metrics across 10 folds"
+  ) %>%
+  cols_label(
+    Metric = "Metric",
+    Value = "Value"
+  ) %>%
+  fmt_number(
+    columns = Value,
+    decimals = 4
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels()
+  ) %>%
+  tab_style(
+    style = cell_text(align = "left"),  # Align "Metric" column to the left
+    locations = cells_body(columns = Metric)
+  ) %>%
+  tab_style(
+    style = cell_text(align = "center"),  # Align "Value" column to the center
+    locations = cells_body(columns = Value)
+  ) %>%
+  tab_style(
+    style = cell_text(align = "center"),  # Ensure column header "Value" is also centered
+    locations = cells_column_labels(columns = Value)
+  ) %>%
+  tab_options(
+    table.font.size = 16,
+    heading.title.font.size = 20,
+    heading.subtitle.font.size = 18,
+    column_labels.font.size = 18,
+    data_row.padding = px(10)
+  )
+
+# Display the table
+print(table9)
+
+# Save the table as an image (optional)
+gtsave(table9, "Table9_Performance_Metrics_kfold.png")
+```

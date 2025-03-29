@@ -1,0 +1,602 @@
+---
+title: "TigreFit_physical_test_men"
+author: "Pablo Tadeo. PhD."
+date: "2025-03-26"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+{r}
+# Chunk 1: Cargar y transformar datos
+
+# Cargar librerías
+library(ggplot2)
+library(dplyr)
+library(gt)
+library(tidyr)
+
+# Importar datos usando file.choose()
+archivo_csv <- file.choose()
+datos <- read.csv(archivo_csv)
+
+# Verificar los nombres de las columnas
+nombres_columnas <- names(datos)
+print(nombres_columnas)
+
+# Renombrar columnas para mayor claridad (usando los nombres exactos)
+datos <- datos %>%
+  rename(
+    T1_AGARRE = nombres_columnas[1],
+    T2_AGARRE = nombres_columnas[2],
+    T1_SALTO = nombres_columnas[3],
+    T2_SALTO = nombres_columnas[4],
+    T1_MILLA = nombres_columnas[5],
+    T2_MILLA = nombres_columnas[6],
+    T1_FC = nombres_columnas[7],
+    T2_FC = nombres_columnas[8]
+  )
+
+# Verificar la estructura de los datos
+str(datos)
+```
+
+# Descriptive Analysis
+
+{r}
+# Chunk 2: Calcular estadísticas descriptivas
+
+estadisticas_descriptivas <- datos %>%
+  summarise(
+    # Agarre
+    T1_AGARRE_media = mean(T1_AGARRE, na.rm = TRUE),
+    T1_AGARRE_sd = sd(T1_AGARRE, na.rm = TRUE),
+    T2_AGARRE_media = mean(T2_AGARRE, na.rm = TRUE),
+    T2_AGARRE_sd = sd(T2_AGARRE, na.rm = TRUE),
+
+    # Salto
+    T1_SALTO_media = mean(T1_SALTO, na.rm = TRUE),
+    T1_SALTO_sd = sd(T1_SALTO, na.rm = TRUE),
+    T2_SALTO_media = mean(T2_SALTO, na.rm = TRUE),
+    T2_SALTO_sd = sd(T2_SALTO, na.rm = TRUE),
+
+    # Milla
+    T1_MILLA_media = mean(T1_MILLA, na.rm = TRUE),
+    T1_MILLA_sd = sd(T1_MILLA, na.rm = TRUE),
+    T2_MILLA_media = mean(T2_MILLA, na.rm = TRUE),
+    T2_MILLA_sd = sd(T2_MILLA, na.rm = TRUE),
+
+    # FC
+    T1_FC_media = mean(T1_FC, na.rm = TRUE),
+    T1_FC_sd = sd(T1_FC, na.rm = TRUE),
+    T2_FC_media = mean(T2_FC, na.rm = TRUE),
+    T2_FC_sd = sd(T2_FC, na.rm = TRUE)
+  ) %>%
+  pivot_longer(cols = everything(), names_to = "variable", values_to = "value") %>%
+  separate(variable, into = c("tiempo", "medida", "estadistico"), sep = "_") %>%
+  pivot_wider(names_from = estadistico, values_from = value) %>%
+  # Crear una columna de grupo
+  mutate(
+    grupo = case_when(
+      medida == "AGARRE" ~ "Agarre",
+      medida == "SALTO" ~ "Salto",
+      medida == "MILLA" ~ "Milla",
+      medida == "FC" ~ "FC",
+      TRUE ~ NA_character_  # Por si acaso hay otros valores
+    )
+  )
+```
+
+{r}
+# Chunk 3: Crear la tabla con gt (mejorada y corregida)
+
+tabla_descriptiva_formateada <- estadisticas_descriptivas %>%
+  mutate(
+    Prueba = case_when(
+      medida == "AGARRE" ~ "Agarre (N)",
+      medida == "SALTO" ~ "Salto (cm)",
+      medida == "MILLA" ~ "Milla (min)",
+      medida == "FC"    ~ "FC (ppm)",
+      TRUE            ~ as.character(medida)
+    )
+  ) %>%
+  select(grupo, tiempo, Prueba, media, sd) %>% # Seleccionamos las columnas correctas
+  gt(groupname_col = "grupo", rowname_col = "tiempo") %>%
+  tab_header(
+    title = "Estadísticas Descriptivas de las Pruebas Físicas"
+  ) %>%
+  cols_label(
+    Prueba = "Prueba",
+    media = "Media",
+    sd = "Desviación Estándar"
+  ) %>%
+  fmt_number(
+    columns = c(media, sd),
+    decimals = 2
+  ) %>%
+  tab_style(
+    style = cell_fill(color = "lightcyan"),
+    locations = cells_body(
+      rows = tiempo == "T1"
+    )
+  ) %>%
+  opt_horizontal_padding(scale = 2) %>%
+  opt_vertical_padding(scale = 1.5) %>%
+  tab_footnote(
+    footnote = "T1 = Toma 1 (Medición inicial), T2 = Toma 2 (Medición final), FC = Frecuencia Cardiaca",
+    locations = cells_title()
+  )
+
+# Mostrar la tabla
+tabla_descriptiva_formateada
+
+
+# Inferential statistical analysis
+
+{r}
+# Chunk 4: Análisis estadístico inferencial (pruebas t pareadas)
+
+# Pruebas t pareadas
+prueba_t_agarre <- t.test(datos$T2_AGARRE, datos$T1_AGARRE, paired = TRUE)
+prueba_t_salto <- t.test(datos$T2_SALTO, datos$T1_SALTO, paired = TRUE)
+prueba_t_milla <- t.test(datos$T2_MILLA, datos$T1_MILLA, paired = TRUE)
+prueba_t_fc <- t.test(datos$T2_FC, datos$T1_FC, paired = TRUE)
+
+# Mostrar los resultados de las pruebas t
+print("Prueba t pareada - Agarre:")
+print(prueba_t_agarre)
+
+print("Prueba t pareada - Salto:")
+print(prueba_t_salto)
+
+print("Prueba t pareada - Milla:")
+print(prueba_t_milla)
+
+print("Prueba t pareada - FC:")
+print(prueba_t_fc)
+
+## Table 2. Summary table of paired t-test
+
+{r}
+# Chunk 5: Tabla resumen de las pruebas t pareadas
+
+# Crear un data frame con los resultados de las pruebas t
+resultados_t_pareadas <- data.frame(
+  Prueba = c("Agarre", "Salto", "Milla", "FC"),
+  t_value = c(prueba_t_agarre$statistic, prueba_t_salto$statistic, prueba_t_milla$statistic, prueba_t_fc$statistic),
+  df = c(prueba_t_agarre$parameter, prueba_t_salto$parameter, prueba_t_milla$parameter, prueba_t_fc$parameter),
+  p_value = c(prueba_t_agarre$p.value, prueba_t_salto$p.value, prueba_t_milla$p.value, prueba_t_fc$p.value)
+)
+
+# Crear la tabla con gt
+tabla_resultados_t <- resultados_t_pareadas %>%
+  gt() %>%
+  tab_header(
+    title = "Resultados de las Pruebas t Pareadas"
+  ) %>%
+  fmt_number(
+    columns = c(t_value, p_value),
+    decimals = 3
+  ) %>%
+  fmt_integer(
+    columns = df
+  ) %>%
+  cols_label(
+    Prueba = "Prueba",
+    t_value = "Valor t",
+    df = "Grados de libertad",
+    p_value = "Valor p"
+  ) %>%
+  # Resaltar las filas no significativas
+  tab_style(
+    style = cell_fill(color = "lightyellow"),
+    locations = cells_body(
+      rows = p_value > 0.05
+    )
+  )
+
+# Mostrar la tabla
+tabla_resultados_t
+
+
+## Figure 1. Paired t-test
+
+{r}
+# Chunk 6: Figura de los resultados de las pruebas t pareadas
+
+# Preparar los datos para el gráfico
+datos_grafico_t <- datos %>%
+  pivot_longer(
+    cols = c(T1_AGARRE, T2_AGARRE, T1_SALTO, T2_SALTO, T1_MILLA, T2_MILLA, T1_FC, T2_FC),
+    names_to = "variable",
+    values_to = "valor"
+  ) %>%
+  separate(variable, into = c("tiempo", "medida"), sep = "_") %>%
+  group_by(medida, tiempo, .groups = "drop") %>%
+  summarise(
+    media = mean(valor, na.rm = TRUE),
+    sd = sd(valor, na.rm = TRUE),
+    n = n()
+  ) %>%
+  mutate(
+    se = sd / sqrt(n),
+    intervalo_confianza = 1.96 * se
+  )
+
+# Crear el gráfico de barras con barras de error
+grafico_t_pareadas <- datos_grafico_t %>%
+  ggplot(aes(x = medida, y = media, fill = tiempo)) + # Usamos + en lugar de %>% o |>
+  geom_bar(stat = "identity", position = position_dodge()) + # Usamos + en lugar de %>% o |>
+  geom_errorbar(
+    aes(ymin = media - intervalo_confianza, ymax = media + intervalo_confianza),
+    position = position_dodge(width = 0.9),
+    width = 0.2
+  ) + # Usamos + en lugar de %>% o |>
+  labs(
+    title = "Comparación de Medias con Intervalos de Confianza",
+    x = "Prueba",
+    y = "Valor",
+    fill = "Toma"
+  )
+
+# Mostrar el gráfico
+grafico_t_pareadas
+
+
+# Correlation Analysis
+
+{r}
+# Chunk 7: Análisis de correlación
+
+# Preparar los datos para el análisis de correlación
+datos_correlacion <- datos %>%
+  select(T1_AGARRE, T2_AGARRE, T1_SALTO, T2_SALTO, T1_MILLA, T2_MILLA, T1_FC, T2_FC)
+
+# Calcular la matriz de correlación
+matriz_correlacion <- cor(datos_correlacion, use = "pairwise.complete.obs")
+
+# Mostrar la matriz de correlación
+print("Matriz de Correlación:")
+print(matriz_correlacion)
+
+
+## Table 3. Summary Correlation
+
+{r}
+# Chunk 8: Tabla resumen de las correlaciones
+
+# Preparar los datos para la tabla
+correlaciones_tabla <- as.data.frame(matriz_correlacion) %>%
+  mutate(Variable1 = rownames(.)) %>%
+  pivot_longer(cols = -Variable1, names_to = "Variable2", values_to = "Correlacion") %>%
+  filter(Variable1 != Variable2) %>%
+  filter(!duplicated(paste0(pmin(Variable1, Variable2), pmax(Variable1, Variable2))))
+
+# Crear la tabla con gt
+tabla_correlaciones <- correlaciones_tabla %>%
+  gt() %>%
+  tab_header(
+    title = "Matriz de Correlación"
+  ) %>%
+  fmt_number(
+    columns = Correlacion,
+    decimals = 3
+  ) %>%
+  cols_label(
+    Variable1 = "Variable 1",
+    Variable2 = "Variable 2",
+    Correlacion = "Correlación"
+  ) %>%
+  # Resaltar las correlaciones fuertes
+  tab_style(
+    style = cell_fill(color = "lightgreen"),
+    locations = cells_body(
+      rows = abs(Correlacion) > 0.7 # Resaltar correlaciones fuertes (> 0.7)
+    )
+  )
+
+# Mostrar la tabla
+tabla_correlaciones
+```
+
+## Figure 2. Heatmap
+
+{r}
+# Chunk 9: Mapa de calor de la matriz de correlación
+
+# Preparar los datos para el mapa de calor
+datos_heatmap <- as.data.frame(matriz_correlacion) %>%
+  mutate(Variable1 = rownames(.)) %>%
+  pivot_longer(cols = -Variable1, names_to = "Variable2", values_to = "Correlacion")
+
+# Crear el mapa de calor
+grafico_correlacion_heatmap <- datos_heatmap %>%
+  ggplot(aes(x = Variable1, y = Variable2, fill = Correlacion)) +
+  geom_tile() +
+  scale_fill_gradient2(
+    low = "blue",
+    mid = "white",
+    high = "red",
+    midpoint = 0,
+    limit = c(-1, 1),
+    space = "Lab",
+    name = "Correlación"
+  ) +
+  geom_text(
+    aes(label = round(Correlacion, 2)),
+    color = "black",
+    size = 3
+  ) +
+  coord_fixed() +
+  labs(
+    title = "Mapa de Calor de la Matriz de Correlación"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+# Mostrar el mapa de calor
+grafico_correlacion_heatmap
+```
+
+# Change Analysis
+
+{r}
+# Chunk 10: Análisis de cambio
+
+# Calcular las diferencias entre T2 y T1
+datos_cambio <- datos %>%
+  mutate(
+    cambio_AGARRE = T2_AGARRE - T1_AGARRE,
+    cambio_SALTO = T2_SALTO - T1_SALTO,
+    cambio_MILLA = T2_MILLA - T1_MILLA,
+    cambio_FC = T2_FC - T1_FC
+  )
+
+# Estadísticas descriptivas de los cambios
+estadisticas_cambio <- datos_cambio %>%
+  summarise(
+    media_cambio_AGARRE = mean(cambio_AGARRE, na.rm = TRUE),
+    sd_cambio_AGARRE = sd(cambio_AGARRE, na.rm = TRUE),
+    media_cambio_SALTO = mean(cambio_SALTO, na.rm = TRUE),
+    sd_cambio_SALTO = sd(cambio_SALTO, na.rm = TRUE),
+    media_cambio_MILLA = mean(cambio_MILLA, na.rm = TRUE),
+    sd_cambio_MILLA = sd(cambio_MILLA, na.rm = TRUE),
+    media_cambio_FC = mean(cambio_FC, na.rm = TRUE),
+    sd_cambio_FC = sd(cambio_FC, na.rm = TRUE)
+  )
+
+# Mostrar las estadísticas descriptivas
+print("Estadísticas descriptivas de los cambios:")
+print(estadisticas_cambio)
+
+# Pruebas t pareadas (ya realizadas en Chunk 5, pero las recordamos)
+# prueba_t_agarre <- t.test(datos$T2_AGARRE, datos$T1_AGARRE, paired = TRUE)
+# prueba_t_salto <- t.test(datos$T2_SALTO, datos$T1_SALTO, paired = TRUE)
+# prueba_t_milla <- t.test(datos$T2_MILLA, datos$T1_MILLA, paired = TRUE)
+# prueba_t_fc <- t.test(datos$T2_FC, datos$T1_FC, paired = TRUE)
+
+# Visualización de los cambios (diagramas de caja)
+grafico_cambio_agarre <- ggplot(datos_cambio, aes(y = cambio_AGARRE)) +
+  geom_boxplot() +
+  labs(
+    title = "Cambio en Agarre (N)",
+    y = "Cambio en Agarre (N)"
+  )
+
+grafico_cambio_salto <- ggplot(datos_cambio, aes(y = cambio_SALTO)) +
+  geom_boxplot() +
+  labs(
+    title = "Cambio en Salto (cm)",
+    y = "Cambio en Salto (cm)"
+  )
+
+grafico_cambio_milla <- ggplot(datos_cambio, aes(y = cambio_MILLA)) +
+  geom_boxplot() +
+  labs(
+    title = "Cambio en Milla (min)",
+    y = "Cambio en Milla (min)"
+  )
+
+grafico_cambio_fc <- ggplot(datos_cambio, aes(y = cambio_FC)) +
+  geom_boxplot() +
+  labs(
+    title = "Cambio en Frecuencia Cardiaca (ppm)",
+    y = "Cambio en Frecuencia Cardiaca (ppm)"
+  )
+
+# Mostrar las visualizaciones
+grafico_cambio_agarre
+grafico_cambio_salto
+grafico_cambio_milla
+grafico_cambio_fc
+```
+
+## Table 3. Summary change analysis
+
+{r}
+# Chunk 12: Tabla resumen del análisis de cambio
+
+# Crear un data frame con los resultados del análisis de cambio
+resultados_cambio <- data.frame(
+  Prueba = c("Agarre", "Salto", "Milla", "FC"),
+  Media_Cambio = c(
+    mean(datos_cambio$cambio_AGARRE, na.rm = TRUE),
+    mean(datos_cambio$cambio_SALTO, na.rm = TRUE),
+    mean(datos_cambio$cambio_MILLA, na.rm = TRUE),
+    mean(datos_cambio$cambio_FC, na.rm = TRUE)
+  ),
+  SD_Cambio = c(
+    sd(datos_cambio$cambio_AGARRE, na.rm = TRUE),
+    sd(datos_cambio$cambio_SALTO, na.rm = TRUE),
+    sd(datos_cambio$cambio_MILLA, na.rm = TRUE),
+    sd(datos_cambio$cambio_FC, na.rm = TRUE)
+  ),
+  p_value = c(
+    prueba_t_agarre$p.value,
+    prueba_t_salto$p.value,
+    prueba_t_milla$p.value,
+    prueba_t_fc$p.value
+  )
+)
+
+# Crear la tabla con gt
+tabla_resultados_cambio <- resultados_cambio %>%
+  gt() %>%
+  tab_header(
+    title = "Resumen del Análisis de Cambio"
+  ) %>%
+  fmt_number(
+    columns = c(Media_Cambio, SD_Cambio, p_value),
+    decimals = 3
+  ) %>%
+  cols_label(
+    Prueba = "Prueba",
+    Media_Cambio = "Cambio Medio",
+    SD_Cambio = "Desv. Estándar",
+    p_value = "Valor p"
+  ) %>%
+  # Resaltar las filas no significativas
+  tab_style(
+    style = cell_fill(color = "lightyellow"),
+    locations = cells_body(
+      rows = p_value > 0.05
+    )
+  )
+
+# Mostrar la tabla
+tabla_resultados_cambio
+```
+
+## Figure 3. Change analysis
+
+{r}
+# Chunk 13: Figura combinada del análisis de cambio
+
+# Preparar los datos para el gráfico combinado
+datos_cambio_grafico <- datos_cambio %>%
+  pivot_longer(
+    cols = c(cambio_AGARRE, cambio_SALTO, cambio_MILLA, cambio_FC),
+    names_to = "variable",
+    values_to = "cambio"
+  ) %>%
+  mutate(
+    Prueba = case_when(
+      variable == "cambio_AGARRE" ~ "Agarre (N)",
+      variable == "cambio_SALTO" ~ "Salto (cm)",
+      variable == "cambio_MILLA" ~ "Milla (min)",
+      variable == "cambio_FC"    ~ "FC (ppm)",
+      TRUE                       ~ as.character(variable)
+    )
+  )
+
+# Crear el gráfico combinado
+grafico_cambio_combinado <- datos_cambio_grafico %>%
+  ggplot(aes(y = cambio, fill = Prueba)) + # Usamos fill para colorear por prueba
+  geom_boxplot() +
+  facet_wrap(~ Prueba, scales = "free_y") + # Facet_wrap para mostrar los diagramas de caja juntos
+  labs(
+    title = "Cambio en las Pruebas Físicas",
+    y = "Cambio"
+  ) +
+  theme_minimal() + # Tema minimalista
+  theme(
+    legend.position = "none", # Ocultar la leyenda
+    strip.text = element_text(size = 10, face = "bold"), # Estilo del texto de las facetas
+    axis.text.x = element_blank(), # Ocultar las etiquetas del eje x
+    axis.ticks.x = element_blank()  # Ocultar los ticks del eje x
+  ) +
+  scale_fill_manual(values = c("lightblue", "lightgreen", "lightcoral", "lightgoldenrodyellow")) # Colores personalizados
+
+# Mostrar el gráfico combinado
+grafico_cambio_combinado
+
+
+# Effect size analysis (Cohen´s d)
+
+## Table 4. Effect size Cohen´s d
+
+{r}
+# Chunk 14: Análisis del tamaño del efecto (d de Cohen)
+
+# Función para calcular la d de Cohen para pruebas t pareadas
+cohen.d.paired <- function(x, y) {
+  m.diff <- mean(x - y)
+  sd.diff <- sd(x - y)
+  d <- m.diff / sd.diff
+  return(d)
+}
+
+# Calcular la d de Cohen para cada variable
+d_agarre <- cohen.d.paired(datos$T2_AGARRE, datos$T1_AGARRE)
+d_salto <- cohen.d.paired(datos$T2_SALTO, datos$T1_SALTO)
+d_milla <- cohen.d.paired(datos$T2_MILLA, datos$T1_MILLA)
+d_fc <- cohen.d.paired(datos$T2_FC, datos$T1_FC)
+
+# Crear un data frame con los resultados del tamaño del efecto
+resultados_cohen_d <- data.frame(
+  Prueba = c("Agarre", "Salto", "Milla", "FC"),
+  d_Cohen = c(d_agarre, d_salto, d_milla, d_fc)
+)
+
+# Mostrar los resultados del tamaño del efecto
+print("Tamaño del efecto (d de Cohen):")
+print(resultados_cohen_d)
+
+# Tabla resumen del tamaño del efecto
+tabla_cohen_d <- resultados_cohen_d %>%
+  gt() %>%
+  tab_header(
+    title = "Tamaño del Efecto (d de Cohen)"
+  ) %>%
+  fmt_number(
+    columns = d_Cohen,
+    decimals = 3
+  ) %>%
+  cols_label(
+    Prueba = "Prueba",
+    d_Cohen = "d de Cohen"
+  )
+
+# Mostrar la tabla
+tabla_cohen_d
+
+
+## Figure 4. Effect Size Cohen´s d
+
+{r}
+# Chunk 15: Visualización del tamaño del efecto (d de Cohen)
+
+# Crear un data frame para el gráfico
+datos_grafico_cohen <- resultados_cohen_d
+
+# Crear el gráfico de barras
+grafico_cohen_d <- datos_grafico_cohen %>%
+  ggplot(aes(x = Prueba, y = d_Cohen, fill = Prueba)) + # Usamos fill para colorear por prueba
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Tamaño del Efecto (d de Cohen)",
+    x = "Prueba",
+    y = "d de Cohen"
+  ) +
+  theme_minimal() + # Tema minimalista
+  theme(
+    legend.position = "none", # Ocultar la leyenda
+    axis.text.x = element_text(angle = 45, hjust = 1) # Rotar las etiquetas del eje x
+  ) +
+  scale_fill_manual(values = c("lightblue", "lightgreen", "lightcoral", "lightgoldenrodyellow")) # Colores personalizados
+
+# Mostrar el gráfico
+grafico_cohen_d
+
+
+
+
+
+
+
+
+
+
+

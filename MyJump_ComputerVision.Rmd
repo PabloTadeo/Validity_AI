@@ -1,0 +1,50 @@
+---
+title: "MyJump_ComputerVisionML"
+author: "Pablo Tadeo. PhD."
+date: "2025-03-09"
+output: html_document
+---
+
+```{r}
+# Install necessary packages (only if not installed)
+packages <- c("tidyverse", "data.table", "ggplot2", "dplyr", "readr", 
+              "corrplot", "lme4", "car", "psych", "caret", "randomForest", 
+              "xgboost", "igraph", "ggraph", "keras", "tensorflow", "GGally")
+
+new_packages <- packages[!(packages %in% installed.packages()[,"Package"])]
+if(length(new_packages)) install.packages(new_packages)
+
+# Load all required libraries
+library(tidyverse)    # Data manipulation and visualization
+library(data.table)   # Fast data processing
+library(ggplot2)      # Advanced visualization
+library(dplyr)        # Data wrangling
+library(readr)        # Efficient CSV reading
+library(corrplot)     # Correlation analysis
+library(lme4)         # Linear mixed models
+library(car)          # Statistical analysis
+library(psych)        # Descriptive statistics
+library(caret)        # Machine learning utilities
+library(randomForest) # Random Forest models
+library(xgboost)      # XGBoost models
+library(igraph)       # Graph-based models (GCN)
+library(ggraph)       # Visualization for Graphs
+library(keras)        # Deep Learning (Graph Convolutional Networks)
+library(tensorflow)   # Backend for deep learning
+library(GGally)       # Enhanced scatterplots and correlation matrices
+
+# Ensure TensorFlow is initialized correctly
+tensorflow::install_tensorflow()
+```
+
+```{r}
+# Check for any loading errors
+loaded_packages <- search()
+missing_packages <- packages[!(paste("package:", packages, sep = "") %in% loaded_packages)]
+if(length(missing_packages)) {
+  print("⚠️ The following packages did not load correctly:")
+  print(missing_packages)
+} else {
+  print("✅ All required packages are successfully loaded.")
+}
+```

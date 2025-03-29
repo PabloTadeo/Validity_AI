@@ -1,0 +1,115 @@
+---
+title: "Descriptive"
+author: "Pablo Tadeo"
+date: "2025-03-07"
+output: html_document
+---
+
+```{r}
+# Install necessary packages (only run once)
+install.packages(c("gt", "dplyr", "tidyverse"))
+
+# Load libraries
+library(gt)          # High-quality tables
+library(dplyr)       # Data manipulation
+library(tidyr)       # Data cleaning
+```
+
+```{r}
+# Load necessary libraries
+library(readxl)
+library(janitor)
+library(tidyverse)
+library(dplyr)
+library(gt)
+
+# Specify the path to your Excel file (adjust according to your location)
+file_path <- "/Users/pablotadeo/Desktop/MJDescriptive.xlsx"
+
+# Load the data from the Excel file
+data <- read_excel(file_path) %>%
+  clean_names()
+
+# Define the groups in the desired order
+groups <- c("Basketball", "Diver", "Recreational Athletes", "Soccer", 
+            "Speed Skater", "Swimming", "Tae Kwon Do", "Volleyball", "Overall")
+
+# Verificar y corregir los nombres de los equipos
+data <- data %>%
+  mutate(team = case_when(
+    team == "Recreational" ~ "Recreational Athletes",
+    team == "Basket" ~ "Basketball",
+    team == "Swim" ~ "Swimming",
+    team == "Socc" ~ "Soccer",
+    team == "Volley" ~ "Volleyball",
+    team == "Dive" ~ "Diver",
+    team == "TKD" ~ "Tae Kwon Do",
+    team == "Speed skater" ~ "Speed Skater",  # Corregir el nombre
+    TRUE ~ team  # Mantener otros nombres sin cambios
+  ))
+
+# Filtrar y ordenar los datos para incluir solo los grupos definidos
+data <- data %>%
+  filter(team %in% groups)
+
+# Calcular estadísticas descriptivas para cada grupo
+descriptive_stats <- data %>%
+  group_by(team) %>%
+  summarise(
+    body_weight_kg = paste0(round(mean(body_weight_kg, na.rm = TRUE), 2), " ± ", round(sd(body_weight_kg, na.rm = TRUE), 2)),
+    jump_height_cm = paste0(round(mean(jump_height_cm, na.rm = TRUE), 2), " ± ", round(sd(jump_height_cm, na.rm = TRUE), 2)),
+    flight_time_ms = paste0(round(mean(flight_time_ms, na.rm = TRUE), 2), " ± ", round(sd(flight_time_ms, na.rm = TRUE), 2)),
+    push_off_distance_m = paste0(round(mean(push_off_distance_hp0_m, na.rm = TRUE), 2), " ± ", round(sd(push_off_distance_hp0_m, na.rm = TRUE), 2)),
+    force_n = paste0(round(mean(force_n, na.rm = TRUE), 2), " ± ", round(sd(force_n, na.rm = TRUE), 2)),
+    velocity_m_s = paste0(round(mean(velocity_m_s, na.rm = TRUE), 2), " ± ", round(sd(velocity_m_s, na.rm = TRUE), 2)),
+    power_w = paste0(round(mean(power_w, na.rm = TRUE), 2), " ± ", round(sd(power_w, na.rm = TRUE), 2)),
+    impulse_n_kg = paste0(round(mean(impulse_n_kg, na.rm = TRUE), 2), " ± ", round(sd(impulse_n_kg, na.rm = TRUE), 2))
+  ) %>%
+  ungroup()
+
+# Calcular estadísticas para el grupo "Overall"
+overall_stats <- data %>%
+  summarise(
+    team = "Overall",
+    body_weight_kg = paste0(round(mean(body_weight_kg, na.rm = TRUE), 2), " ± ", round(sd(body_weight_kg, na.rm = TRUE), 2)),
+    jump_height_cm = paste0(round(mean(jump_height_cm, na.rm = TRUE), 2), " ± ", round(sd(jump_height_cm, na.rm = TRUE), 2)),
+    flight_time_ms = paste0(round(mean(flight_time_ms, na.rm = TRUE), 2), " ± ", round(sd(flight_time_ms, na.rm = TRUE), 2)),
+    push_off_distance_m = paste0(round(mean(push_off_distance_hp0_m, na.rm = TRUE), 2), " ± ", round(sd(push_off_distance_hp0_m, na.rm = TRUE), 2)),
+    force_n = paste0(round(mean(force_n, na.rm = TRUE), 2), " ± ", round(sd(force_n, na.rm = TRUE), 2)),
+    velocity_m_s = paste0(round(mean(velocity_m_s, na.rm = TRUE), 2), " ± ", round(sd(velocity_m_s, na.rm = TRUE), 2)),
+    power_w = paste0(round(mean(power_w, na.rm = TRUE), 2), " ± ", round(sd(power_w, na.rm = TRUE), 2)),
+    impulse_n_kg = paste0(round(mean(impulse_n_kg, na.rm = TRUE), 2), " ± ", round(sd(impulse_n_kg, na.rm = TRUE), 2))
+  )
+
+# Combinar las estadísticas de los grupos con el grupo "Overall"
+descriptive_stats <- bind_rows(descriptive_stats, overall_stats)
+
+# Asegurar el orden correcto de los equipos
+descriptive_stats$team <- factor(descriptive_stats$team, levels = groups, ordered = TRUE)
+descriptive_stats <- descriptive_stats %>%
+  arrange(team)
+
+# Generar la tabla usando gt
+descriptive_stats %>%
+  gt() %>%
+  tab_header(
+    title = "Table 2. Anthropometric and Performance Characteristics",
+    subtitle = "Descriptive Statistics for CMJ Trials of My Jump 3 (Mean ± SD)"
+  ) %>%
+  cols_label(
+    team = "Team",
+    body_weight_kg = "Body Weight (kg)",
+    jump_height_cm = "Jump Height (cm)",
+    flight_time_ms = "Flight Time (ms)",
+    push_off_distance_m = "Push-Off Distance (m)",
+    force_n = "Force (N)",
+    velocity_m_s = "Velocity (m/s)",
+    power_w = "Power (W)",
+    impulse_n_kg = "Impulse (N·kg⁻¹)"
+  ) %>%
+  tab_options(
+    table.font.size = 12,
+    column_labels.font.weight = "bold",
+    data_row.padding = px(6)
+  )
+```
