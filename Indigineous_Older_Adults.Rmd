@@ -1,0 +1,58 @@
+---
+title: "Study_Across_Indigenous_Urban_Older"
+author: "Pablo Tadeo. PhD."
+date: "2025-03-29"
+output: html_document
+---
+
+# Calculate the sample size
+
+```{r}
+if(!require(pwr)){
+  install.packages("pwr")
+  library(pwr)
+} else {
+  library(pwr)
+}
+```
+
+```{r}
+# --- Example: Two-Sample T-test ---
+
+# Parameters
+alpha <- 0.05  # Significance level
+power <- 0.80  # Desired power (commonly 0.80 or 0.90)
+
+# Effect size estimation (Cohen's d) - THIS IS KEY!
+# You need to estimate this based on pilot data, previous studies, or practical significance.
+# Common benchmarks: d=0.2 (small), d=0.5 (medium), d=0.8 (large)
+effect_size_d <- 0.5 # Let's assume we expect/target a MEDIUM effect size
+
+# Calculate sample size (n is per group for two.sample t-test)
+sample_size_t <- pwr.t.test(d = effect_size_d,
+                           sig.level = alpha,
+                           power = power,
+                           type = "two.sample", # Use "one.sample" for one-sample t-test, "paired" for paired t-test
+                           alternative = "two.sided") # Use "less" or "greater" for one-sided tests
+
+# View the full result object
+print(sample_size_t)
+
+# Extract sample size per group and round up
+n_per_group <- ceiling(sample_size_t$n)
+total_n <- n_per_group * 2
+
+# Print a user-friendly summary
+cat("\n--- Two-Sample T-test Results ---")
+cat("\nTo detect a Cohen's d =", effect_size_d, "with alpha =", alpha, "and power =", power)
+cat("\nRequired sample size PER GROUP (n): approx.", n_per_group)
+cat("\nTotal required sample size:", total_n, "\n")
+
+# --- Optional: Calculate for a different effect size (e.g., LARGE) ---
+effect_size_d_large <- 0.8
+sample_size_t_large <- pwr.t.test(d = effect_size_d_large, sig.level = alpha, power = power, type = "two.sample", alternative = "two.sided")
+n_per_group_large <- ceiling(sample_size_t_large$n)
+cat("\nTo detect a LARGE effect (d =", effect_size_d_large, "):")
+cat("\nRequired sample size PER GROUP (n): approx.", n_per_group_large)
+cat("\nTotal required sample size:", n_per_group_large * 2, "\n")
+```
